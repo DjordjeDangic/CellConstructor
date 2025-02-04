@@ -2,9 +2,10 @@ module get_lf
 
     contains
 
-    subroutine calculate_lineshapes(irrqgrid, qgrid, weights, scatt_events, fc2, r2_2, &
-                    fc3, r3_2, r3_3, rprim, pos, masses, smear, smear_id, T, gaussian, &
-                    classical, energies, ne, nirrqpt, nat, nfc2, nfc3, n_events, lineshapes)
+    subroutine calculate_lineshapes(irrqgrid, qgrid, weights, scatt_events, qe_zeu, fc2, r2_2, &
+                    fc3, r3_2, r3_3, rprim, dielectric_tensor, pos, masses, smear, smear_id, T, &
+                    qe_alat, gaussian, classical, long_range, energies, ne, nirrqpt, nat, nfc2, &
+                    nfc3, n_events, lineshapes)
 
         use omp_lib
         use third_order_cond
@@ -12,28 +13,31 @@ module get_lf
         implicit none
 
         integer, parameter :: DP = selected_real_kind(14,200)
-        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875
+        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875, A_TO_BOHR = 1.889725989_DP
 
         integer, intent(in) :: nirrqpt, nat, nfc2, nfc3, ne, n_events
         integer, intent(in) :: weights(n_events), scatt_events(nirrqpt)
         real(kind=DP), intent(in) :: irrqgrid(3, nirrqpt)
         real(kind=DP), intent(in) :: qgrid(3, n_events)
+        real(kind=DP), intent(in) :: qe_zeu(3, 3, nat)
         real(kind=DP), intent(in) :: fc2(nfc2, 3*nat, 3*nat)
         real(kind=DP), intent(in) :: fc3(nfc3, 3*nat, 3*nat, 3*nat)
         real(kind=DP), intent(in) :: r2_2(3, nfc2)
         real(kind=DP), intent(in) :: r3_2(3, nfc3), r3_3(3, nfc3)
-        real(kind=DP), intent(in) :: rprim(3, 3)
+        real(kind=DP), intent(in) :: rprim(3, 3), dielectric_tensor(3,3)
         real(kind=DP), intent(in) :: pos(3, nat)
         real(kind=DP), intent(in) :: masses(nat), energies(ne)
         real(kind=DP), intent(in) :: smear(3*nat, nirrqpt), smear_id(3*nat, nirrqpt)
-        real(kind=DP), intent(in) :: T
-        logical, intent(in) :: gaussian, classical
+        real(kind=DP), intent(in) :: T, qe_alat
+        logical, intent(in) :: gaussian, classical, long_range
         real(kind=DP), dimension(nirrqpt, 3*nat, ne), intent(out) :: lineshapes
 
         integer :: iqpt, i, jqpt, tot_qpt, prev_events, nthreads
-        real(kind=DP), dimension(3) :: qpt
-        real(kind=DP), dimension(3,3) :: kprim
+        real(kind=DP), dimension(3) :: qpt, qe_q
+        real(kind=DP), dimension(3,3) :: kprim, qe_bg
+        real(kind=DP), dimension(3,nat) :: qe_tau
         real(kind=DP), dimension(3*nat) :: w2_q, w_q
+        real(kind=DP) :: qe_omega
 !        real(kind=DP), dimension(ne, 3*nat) :: lineshape
         real(kind=DP), allocatable, dimension(:, :) :: lineshape
         complex(kind=DP), allocatable, dimension(:, :) :: self_energy
@@ -42,7 +46,6 @@ module get_lf
         real(kind=DP), allocatable, dimension(:,:) :: curr_grid
         integer, allocatable, dimension(:) :: curr_w
         logical :: is_q_gamma, w_neg_freqs, parallelize
-
 
         lineshapes(:,:,:) = 0.0_DP
         kprim = transpose(inv(rprim))
@@ -55,12 +58,16 @@ module get_lf
         endif
 !        print*, 'Got parallelize'
 
+        qe_tau = pos * A_TO_BOHR / qe_alat
+        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
+        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
+
         !$OMP PARALLEL DO IF(parallelize) DEFAULT(NONE) &
-        !$OMP PRIVATE(iqpt, w_neg_freqs, qpt, w2_q, pols_q, d2_q, is_q_gamma, self_energy, &
+        !$OMP PRIVATE(iqpt, w_neg_freqs, qpt, qe_q, w2_q, pols_q, d2_q, is_q_gamma, self_energy, &
         !$OMP curr_grid, w_q, curr_w, prev_events, tot_qpt, lineshape) &
-        !$OMP SHARED(nirrqpt, nfc2, nat, fc2, r2_2, masses, kprim, scatt_events, &
-        !$OMP nfc3, ne, fc3, r3_2, r3_3, pos, smear, T, energies, parallelize, smear_id, lineshapes, &
-        !$OMP irrqgrid, qgrid, weights, gaussian, classical)
+        !$OMP SHARED(nirrqpt, nfc2, nat, qe_zeu, fc2, r2_2, masses, kprim, dielectric_tensor, qe_bg, scatt_events, &
+        !$OMP nfc3, ne, fc3, r3_2, r3_3, pos, qe_tau, smear, T, qe_alat, qe_omega, energies, parallelize, smear_id, lineshapes, &
+        !$OMP irrqgrid, qgrid, weights, gaussian, classical, long_range)
         do iqpt = 1, nirrqpt
             allocate(lineshape(ne, 3*nat), self_energy(ne, 3*nat))
 !            print*, iqpt
@@ -68,7 +75,11 @@ module get_lf
             print*, 'Calculating ', iqpt, ' point in the irreducible zone out of ', nirrqpt, '!'
             lineshape(:,:) = 0.0_DP 
             qpt = irrqgrid(:, iqpt) 
-            call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, qpt, w2_q, pols_q, d2_q)
+            qe_q = qpt*qe_alat/A_TO_BOHR
+
+            !call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, qpt, w2_q, pols_q, d2_q)
+            call interpolate_fc2(nfc2, nat, fc2, qe_zeu, dielectric_tensor, qe_bg, r2_2, masses, pos, qe_tau, &
+                               qpt, qe_q, qe_omega, qe_alat, long_range, w2_q, pols_q, d2_q)
             call check_if_gamma(nat, qpt, kprim, w2_q, is_q_gamma)
 
             if(any(w2_q < 0.0_DP)) then
@@ -92,8 +103,8 @@ module get_lf
                 enddo
 !                print*, 'Got grids'
                 call calculate_self_energy_P(w_q, qpt, pols_q, is_q_gamma, scatt_events(iqpt), nat, nfc2, &
-                    nfc3, ne, curr_grid, curr_w, fc2, fc3, r2_2, r3_2, r3_3, pos, kprim, masses, smear(:,iqpt), T, &
-                    energies, .not. parallelize, gaussian, classical, self_energy) 
+                    nfc3, ne, curr_grid, curr_w, qe_zeu, fc2, fc3, r2_2, r3_2, r3_3, pos, kprim, dielectric_tensor,&
+                    masses, smear(:,iqpt), T, qe_alat, energies, .not. parallelize, gaussian, classical, long_range, self_energy) 
                 deallocate(curr_grid)
                 tot_qpt = sum(curr_w)
                 deallocate(curr_w)
@@ -134,9 +145,10 @@ module get_lf
 
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-    subroutine calculate_lineshapes_mode_mixing(irrqgrid, qgrid, weights, scatt_events, fc2, r2_2, &
-                    fc3, r3_2, r3_3, rprim, pos, masses, smear, smear_id, T, gaussian, &
-                    classical, energies, ne, nirrqpt, nat, nfc2, nfc3, n_events, lineshapes)
+    subroutine calculate_lineshapes_mode_mixing(irrqgrid, qgrid, weights, scatt_events, qe_zeu, fc2, r2_2, &
+                    fc3, r3_2, r3_3, rprim, dielectric_tensor, pos, masses, smear, smear_id, T, &
+                    qe_alat, gaussian, classical, long_range, energies, ne, nirrqpt, nat, nfc2, &
+                    nfc3, n_events, lineshapes)
 
         use omp_lib
         use third_order_cond
@@ -144,29 +156,32 @@ module get_lf
         implicit none
 
         integer, parameter :: DP = selected_real_kind(14,200)
-        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875
+        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875, A_TO_BOHR = 1.889725989_DP
 
         integer, intent(in) :: nirrqpt, nat, nfc2, nfc3, ne, n_events
         integer, intent(in) :: weights(n_events), scatt_events(nirrqpt)
         real(kind=DP), intent(in) :: irrqgrid(3, nirrqpt)
         real(kind=DP), intent(in) :: qgrid(3, n_events)
+        real(kind=DP), intent(in) :: qe_zeu(3, 3, nat)
         real(kind=DP), intent(in) :: fc2(nfc2, 3*nat, 3*nat)
         real(kind=DP), intent(in) :: fc3(nfc3, 3*nat, 3*nat, 3*nat)
         real(kind=DP), intent(in) :: r2_2(3, nfc2)
         real(kind=DP), intent(in) :: r3_2(3, nfc3), r3_3(3, nfc3)
-        real(kind=DP), intent(in) :: rprim(3, 3)
+        real(kind=DP), intent(in) :: rprim(3, 3), dielectric_tensor(3,3)
         real(kind=DP), intent(in) :: pos(3, nat)
         real(kind=DP), intent(in) :: masses(nat), energies(ne)
         real(kind=DP), intent(in) :: smear(3*nat, nirrqpt), smear_id(3*nat, nirrqpt)
-        real(kind=DP), intent(in) :: T
-        logical, intent(in) :: gaussian, classical
+        real(kind=DP), intent(in) :: T, qe_alat
+        logical, intent(in) :: gaussian, classical, long_range
         complex(kind=DP), dimension(nirrqpt, 3*nat, 3*nat, ne), intent(out) :: lineshapes
 
         integer :: iqpt, i, ie, jqpt, tot_qpt, prev_events, nthreads, iband, jband
         integer :: iband1, jband1
-        real(kind=DP), dimension(3) :: qpt
-        real(kind=DP), dimension(3,3) :: kprim
+        real(kind=DP), dimension(3) :: qpt, qe_q
+        real(kind=DP), dimension(3,3) :: kprim, qe_bg
+        real(kind=DP), dimension(3,nat) :: qe_tau
         real(kind=DP), dimension(3*nat) :: w2_q, w_q
+        real(kind=DP) :: qe_omega 
 !        real(kind=DP), dimension(ne, 3*nat) :: lineshape
         complex(kind=DP), allocatable, dimension(:,:,:) :: lineshape
         complex(kind=DP), allocatable, dimension(:, :, :) :: self_energy
@@ -188,13 +203,16 @@ module get_lf
                 parallelize = .False.
         endif
 !        print*, 'Got parallelize'
+        qe_tau = pos * A_TO_BOHR / qe_alat
+        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
+        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
 
         !$OMP PARALLEL DO IF(parallelize) DEFAULT(NONE) &
-        !$OMP PRIVATE(iqpt, w_neg_freqs, qpt, w2_q, pols_q, is_q_gamma, self_energy, &
+        !$OMP PRIVATE(iqpt, w_neg_freqs, qpt, qe_q, w2_q, pols_q, is_q_gamma, self_energy, &
         !$OMP curr_grid, w_q, curr_w, prev_events, tot_qpt, d2_q, lineshape) &
-        !$OMP SHARED(nirrqpt, nfc2, nat, fc2, r2_2, masses, kprim, scatt_events, &
-        !$OMP nfc3, ne, fc3, r3_2, r3_3, pos, smear, T, energies, parallelize, smear_id, lineshapes, &
-        !$OMP irrqgrid, qgrid, weights, gaussian, classical)
+        !$OMP SHARED(nirrqpt, nfc2, nat, qe_zeu, fc2, r2_2, masses, kprim, dielectric_tensor, qe_bg, scatt_events, &
+        !$OMP nfc3, ne, fc3, r3_2, r3_3, pos, qe_tau, smear, T, qe_alat, qe_omega, energies, parallelize, smear_id, &
+        !$OMP lineshapes, irrqgrid, qgrid, weights, gaussian, classical, long_range)
         do iqpt = 1, nirrqpt
             allocate(lineshape(3*nat, 3*nat, ne), self_energy(ne, 3*nat, 3*nat))
 !            print*, iqpt
@@ -202,7 +220,10 @@ module get_lf
             print*, 'Calculating ', iqpt, ' point in the irreducible zone out of ', nirrqpt, '!'
             lineshape(:,:,:) = 0.0_DP 
             qpt = irrqgrid(:, iqpt) 
-            call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, qpt, w2_q, pols_q, d2_q)
+            qe_q = qpt*qe_alat/A_TO_BOHR
+            !call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, qpt, w2_q, pols_q, d2_q)
+            call interpolate_fc2(nfc2, nat, fc2, qe_zeu, dielectric_tensor, qe_bg, r2_2, masses, pos, qe_tau, &
+                               qpt, qe_q, qe_omega, qe_alat, long_range, w2_q, pols_q, d2_q)
             call check_if_gamma(nat, qpt, kprim, w2_q, is_q_gamma)
 
             if(any(w2_q < 0.0_DP)) then
@@ -225,8 +246,9 @@ module get_lf
                     curr_w(jqpt) = weights(prev_events + jqpt)
                 enddo
                 call calculate_self_energy_full(w_q, qpt, pols_q, is_q_gamma, scatt_events(iqpt), nat, nfc2, &
-                    nfc3, ne, curr_grid, curr_w, fc2, fc3, r2_2, r3_2, r3_3, pos, kprim, masses, smear(:,iqpt), T, &
-                    energies, .not. parallelize, gaussian, classical, self_energy) 
+                    nfc3, ne, curr_grid, curr_w, qe_zeu, fc2, fc3, r2_2, r3_2, r3_3, pos, kprim, dielectric_tensor, &
+                    masses, smear(:,iqpt), T, qe_alat, &
+                    energies, .not. parallelize, gaussian, classical, long_range, self_energy) 
                 deallocate(curr_grid)
                 tot_qpt = sum(curr_w)
                 deallocate(curr_w)
@@ -271,9 +293,10 @@ module get_lf
 
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-    subroutine calculate_lineshapes_cartesian(irrqgrid, qgrid, weights, scatt_events, fc2, r2_2, &
-                    fc3, r3_2, r3_3, rprim, pos, masses, smear, smear_id, T, gaussian, &
-                    classical, energies, ne, nirrqpt, nat, nfc2, nfc3, n_events, lineshapes)
+    subroutine calculate_lineshapes_cartesian(irrqgrid, qgrid, weights, scatt_events, qe_zeu, fc2, r2_2, &
+                    fc3, r3_2, r3_3, rprim, dielectric_tensor, pos, masses, smear, smear_id, T, &
+                    qe_alat, gaussian, classical, long_range, energies, ne, nirrqpt, nat, nfc2, &
+                    nfc3, n_events, lineshapes)
 
         use omp_lib
         use third_order_cond
@@ -281,28 +304,31 @@ module get_lf
         implicit none
 
         integer, parameter :: DP = selected_real_kind(14,200)
-        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875
+        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875, A_TO_BOHR = 1.889725989_DP
 
         integer, intent(in) :: nirrqpt, nat, nfc2, nfc3, ne, n_events
         integer, intent(in) :: weights(n_events), scatt_events(nirrqpt)
         real(kind=DP), intent(in) :: irrqgrid(3, nirrqpt)
         real(kind=DP), intent(in) :: qgrid(3, n_events)
+        real(kind=DP), intent(in) :: qe_zeu(3, 3, nat)
         real(kind=DP), intent(in) :: fc2(nfc2, 3*nat, 3*nat)
         real(kind=DP), intent(in) :: fc3(nfc3, 3*nat, 3*nat, 3*nat)
         real(kind=DP), intent(in) :: r2_2(3, nfc2)
         real(kind=DP), intent(in) :: r3_2(3, nfc3), r3_3(3, nfc3)
-        real(kind=DP), intent(in) :: rprim(3, 3)
+        real(kind=DP), intent(in) :: rprim(3, 3), dielectric_tensor(3,3)
         real(kind=DP), intent(in) :: pos(3, nat)
         real(kind=DP), intent(in) :: masses(nat), energies(ne)
         real(kind=DP), intent(in) :: smear(3*nat, nirrqpt), smear_id(3*nat, nirrqpt)
-        real(kind=DP), intent(in) :: T
-        logical, intent(in) :: gaussian, classical
+        real(kind=DP), intent(in) :: T, qe_alat
+        logical, intent(in) :: gaussian, classical, long_range
         complex(kind=DP), dimension(nirrqpt, 3*nat, 3*nat, ne), intent(out) :: lineshapes
 
         integer :: iqpt, i, ie, jqpt, tot_qpt, prev_events, nthreads, iband, jband
         integer :: iband1, jband1
-        real(kind=DP), dimension(3) :: qpt
-        real(kind=DP), dimension(3,3) :: kprim
+        real(kind=DP), dimension(3) :: qpt, qe_q
+        real(kind=DP), dimension(3,3) :: kprim, qe_bg
+        real(kind=DP), dimension(3,nat) :: qe_tau
+        real(kind=DP) :: qe_omega
         real(kind=DP), dimension(3*nat) :: w2_q, w_q
 !        real(kind=DP), dimension(ne, 3*nat) :: lineshape
         complex(kind=DP), allocatable, dimension(:,:,:) :: lineshape
@@ -324,13 +350,16 @@ module get_lf
                 parallelize = .False.
         endif
 !        print*, 'Got parallelize'
+        qe_tau = pos * A_TO_BOHR / qe_alat
+        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
+        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
 
         !$OMP PARALLEL DO IF(parallelize) DEFAULT(NONE) &
-        !$OMP PRIVATE(iqpt, w_neg_freqs, qpt, w2_q, pols_q, is_q_gamma, self_energy, &
+        !$OMP PRIVATE(iqpt, w_neg_freqs, qpt, qe_q, w2_q, pols_q, is_q_gamma, self_energy, &
         !$OMP curr_grid, w_q, curr_w, prev_events, tot_qpt, self_energy_cart, d2_q, lineshape) &
-        !$OMP SHARED(nirrqpt, nfc2, nat, fc2, r2_2, masses, kprim, scatt_events, &
-        !$OMP nfc3, ne, fc3, r3_2, r3_3, pos, smear, T, energies, parallelize, smear_id, lineshapes, &
-        !$OMP irrqgrid, qgrid, weights, gaussian, classical)
+        !$OMP SHARED(nirrqpt, nfc2, nat, qe_zeu, fc2, r2_2, masses, kprim, dielectric_tensor, qe_bg, scatt_events, &
+        !$OMP nfc3, ne, fc3, r3_2, r3_3, pos, qe_tau, smear, T, qe_alat, qe_omega, energies, parallelize, smear_id,&
+        !$OMP lineshapes, irrqgrid, qgrid, weights, gaussian, classical, long_range)
         do iqpt = 1, nirrqpt
             allocate(lineshape(3*nat, 3*nat, ne), self_energy(ne, 3*nat, 3*nat), self_energy_cart(ne, 3*nat, 3*nat))
 !            print*, iqpt
@@ -338,7 +367,10 @@ module get_lf
             print*, 'Calculating ', iqpt, ' point in the irreducible zone out of ', nirrqpt, '!'
             lineshape(:,:,:) = 0.0_DP 
             qpt = irrqgrid(:, iqpt) 
-            call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, qpt, w2_q, pols_q, d2_q)
+            qe_q = qpt*qe_alat/A_TO_BOHR
+            !call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, qpt, w2_q, pols_q, d2_q)
+            call interpolate_fc2(nfc2, nat, fc2, qe_zeu, dielectric_tensor, qe_bg, r2_2, masses, pos, qe_tau, &
+                               qpt, qe_q, qe_omega, qe_alat, long_range, w2_q, pols_q, d2_q)
             call check_if_gamma(nat, qpt, kprim, w2_q, is_q_gamma)
 
             if(any(w2_q < 0.0_DP)) then
@@ -363,8 +395,9 @@ module get_lf
                 enddo
 !                print*, 'Got grids'
                 call calculate_self_energy_full(w_q, qpt, pols_q, is_q_gamma, scatt_events(iqpt), nat, nfc2, &
-                    nfc3, ne, curr_grid, curr_w, fc2, fc3, r2_2, r3_2, r3_3, pos, kprim, masses, smear(:,iqpt), T, &
-                    energies, .not. parallelize, gaussian, classical, self_energy) 
+                    nfc3, ne, curr_grid, curr_w, qe_zeu, fc2, fc3, r2_2, r3_2, r3_3, pos, kprim, &
+                    dielectric_tensor, masses, smear(:,iqpt), T, qe_alat, &
+                    energies, .not. parallelize, gaussian, classical, long_range, self_energy) 
                 deallocate(curr_grid)
                 tot_qpt = sum(curr_w)
                 deallocate(curr_w)
@@ -408,9 +441,9 @@ module get_lf
 
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-    subroutine calculate_lifetimes_selfconsistently(irrqgrid, qgrid, weights, scatt_events, fc2, r2_2, &
-                    fc3, r3_2, r3_3, rprim, pos, masses, smear, smear_id, T, gaussian, &
-                    classical, energies, ne, nirrqpt, nat, nfc2, nfc3, n_events, selfengs)
+    subroutine calculate_lifetimes_selfconsistently(irrqgrid, qgrid, weights, scatt_events, qe_zeu, fc2, r2_2, &
+                    fc3, r3_2, r3_3, rprim, dielectric_tensor, pos, masses, smear, smear_id, T, qe_alat, gaussian, &
+                    classical, long_range, energies, ne, nirrqpt, nat, nfc2, nfc3, n_events, selfengs)
 
         use omp_lib
         use third_order_cond
@@ -418,28 +451,31 @@ module get_lf
         implicit none
 
         integer, parameter :: DP = selected_real_kind(14,200)
-        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875
+        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875, A_TO_BOHR = 1.889725989_DP
 
         integer, intent(in) :: nirrqpt, nat, nfc2, nfc3, ne, n_events
         integer, intent(in) :: weights(n_events), scatt_events(nirrqpt)
         real(kind=DP), intent(in) :: irrqgrid(3, nirrqpt)
         real(kind=DP), intent(in) :: qgrid(3, n_events)
+        real(kind=DP), intent(in) :: qe_zeu(3, 3, nat)
         real(kind=DP), intent(in) :: fc2(nfc2, 3*nat, 3*nat)
         real(kind=DP), intent(in) :: fc3(nfc3, 3*nat, 3*nat, 3*nat)
         real(kind=DP), intent(in) :: r2_2(3, nfc2)
         real(kind=DP), intent(in) :: r3_2(3, nfc3), r3_3(3, nfc3)
-        real(kind=DP), intent(in) :: rprim(3, 3)
+        real(kind=DP), intent(in) :: rprim(3, 3), dielectric_tensor(3,3)
         real(kind=DP), intent(in) :: pos(3, nat)
         real(kind=DP), intent(in) :: masses(nat), energies(ne)
         real(kind=DP), intent(in) :: smear(3*nat, nirrqpt), smear_id(3*nat, nirrqpt)
-        real(kind=DP), intent(in) :: T
-        logical, intent(in) :: gaussian, classical
+        real(kind=DP), intent(in) :: T, qe_alat
+        logical, intent(in) :: gaussian, classical, long_range
         complex(kind=DP), dimension(nirrqpt, 3*nat), intent(out) :: selfengs
 
         integer :: iqpt, i, jqpt, tot_qpt, prev_events, nthreads
-        real(kind=DP), dimension(3) :: qpt
-        real(kind=DP), dimension(3,3) :: kprim
+        real(kind=DP), dimension(3) :: qpt, qe_q
+        real(kind=DP), dimension(3,3) :: kprim, qe_bg
+        real(kind=DP), dimension(3,nat) :: qe_tau
         real(kind=DP), dimension(3*nat) :: w2_q, w_q, tau, omega
+        real(kind=DP) :: qe_omega 
         complex(kind=DP), allocatable, dimension(:, :) :: self_energy
         complex(kind=DP), dimension(3*nat,3*nat) :: pols_q, d2_q
         real(kind=DP), allocatable, dimension(:,:) :: curr_grid
@@ -457,20 +493,26 @@ module get_lf
                 parallelize = .False.
         endif
 !        print*, 'Got parallelize'
+        qe_tau = pos * A_TO_BOHR / qe_alat
+        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
+        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
 
         !$OMP PARALLEL DO IF(parallelize) DEFAULT(NONE) &
-        !$OMP PRIVATE(iqpt, w_neg_freqs, qpt, w2_q, pols_q, d2_q, is_q_gamma, self_energy, &
+        !$OMP PRIVATE(iqpt, w_neg_freqs, qpt, qe_q, w2_q, pols_q, d2_q, is_q_gamma, self_energy, &
         !$OMP curr_grid, w_q, curr_w, prev_events, tot_qpt, tau, omega) &
-        !$OMP SHARED(nirrqpt, nfc2, nat, fc2, r2_2, masses, kprim, scatt_events, &
-        !$OMP nfc3, ne, fc3, r3_2, r3_3, pos, smear, T, energies, parallelize, smear_id, selfengs, &
-        !$OMP irrqgrid, qgrid, weights, gaussian, classical)
+        !$OMP SHARED(nirrqpt, nfc2, nat, qe_zeu, fc2, r2_2, masses, kprim, dielectric_tensor, qe_bg, scatt_events, &
+        !$OMP nfc3, ne, fc3, r3_2, r3_3, pos, qe_tau, smear, T, qe_alat, qe_omega, energies, parallelize, &
+        !$OMP smear_id, selfengs, irrqgrid, qgrid, weights, gaussian, classical, long_range)
         do iqpt = 1, nirrqpt
             allocate(self_energy(ne, 3*nat))
 !            print*, iqpt
             w_neg_freqs = .False.
             print*, 'Calculating ', iqpt, ' point in the irreducible zone out of ', nirrqpt, '!'
             qpt = irrqgrid(:, iqpt) 
-            call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, qpt, w2_q, pols_q, d2_q)
+            qe_q = qpt*qe_alat/A_TO_BOHR
+            !call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, qpt, w2_q, pols_q, d2_q)
+            call interpolate_fc2(nfc2, nat, fc2, qe_zeu, dielectric_tensor, qe_bg, r2_2, masses, pos, qe_tau, &
+                               qpt, qe_q, qe_omega, qe_alat, long_range, w2_q, pols_q, d2_q)
             call check_if_gamma(nat, qpt, kprim, w2_q, is_q_gamma)
 
             if(any(w2_q < 0.0_DP)) then
@@ -494,8 +536,9 @@ module get_lf
                 enddo
 !                print*, 'Got grids'
                 call calculate_self_energy_P(w_q, qpt, pols_q, is_q_gamma, scatt_events(iqpt), nat, nfc2, &
-                    nfc3, ne, curr_grid, curr_w, fc2, fc3, r2_2, r3_2, r3_3, pos, kprim, masses, smear(:,iqpt), T, &
-                    energies, .not. parallelize, gaussian, classical, self_energy) 
+                    nfc3, ne, curr_grid, curr_w, qe_zeu, fc2, fc3, r2_2, r3_2, r3_3, pos, kprim, &
+                    dielectric_tensor, masses, smear(:,iqpt), T, qe_alat, &
+                    energies, .not. parallelize, gaussian, classical, long_range, self_energy) 
                 deallocate(curr_grid)
                 tot_qpt = sum(curr_w)
                 deallocate(curr_w)
@@ -633,37 +676,40 @@ module get_lf
 
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-    subroutine calculate_lifetimes_perturbative(irrqgrid, qgrid, weights, scatt_events, fc2, r2_2, &
-                    fc3, r3_2, r3_3, rprim, pos, masses, smear, T, gaussian, &
-                    classical, nirrqpt, nat, nfc2, nfc3, n_events, self_energies)
+    subroutine calculate_lifetimes_perturbative(irrqgrid, qgrid, weights, scatt_events, qe_zeu, fc2, r2_2, &
+                    fc3, r3_2, r3_3, rprim, dielectric_tensor, pos, masses, smear, T, qe_alat, gaussian, &
+                    classical, long_range, nirrqpt, nat, nfc2, nfc3, n_events, self_energies)
 
         use omp_lib
         implicit none
 
         integer, parameter :: DP = selected_real_kind(14,200)
-        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875
+        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875, A_TO_BOHR = 1.889725989_DP
 
         integer, intent(in) :: nirrqpt, nat, nfc2, nfc3, n_events
         integer, intent(in) :: weights(n_events), scatt_events(nirrqpt)
         real(kind=DP), intent(in) :: irrqgrid(3, nirrqpt)
         real(kind=DP), intent(in) :: qgrid(3, n_events)
+        real(kind=DP), intent(in) :: qe_zeu(3, 3, nat)
         real(kind=DP), intent(in) :: fc2(nfc2, 3*nat, 3*nat)
         real(kind=DP), intent(in) :: fc3(nfc3, 3*nat, 3*nat, 3*nat)
         real(kind=DP), intent(in) :: r2_2(3, nfc2)
         real(kind=DP), intent(in) :: r3_2(3, nfc3), r3_3(3, nfc3)
-        real(kind=DP), intent(in) :: rprim(3, 3)
+        real(kind=DP), intent(in) :: rprim(3, 3), dielectric_tensor(3,3)
         real(kind=DP), intent(in) :: pos(3, nat)
         real(kind=DP), intent(in) :: masses(nat)
         real(kind=DP), intent(in) :: smear(3*nat, nirrqpt)
-        real(kind=DP), intent(in) :: T
-        logical, intent(in) :: gaussian, classical
+        real(kind=DP), intent(in) :: T, qe_alat
+        logical, intent(in) :: gaussian, classical, long_range
         complex(kind=DP), dimension(nirrqpt, 3*nat), intent(out) :: self_energies
 
         integer :: iqpt, i, tot_qpt, jqpt, prev_events, nthreads
-        real(kind=DP), dimension(3) :: qpt
-        real(kind=DP), dimension(3,3) :: kprim
+        real(kind=DP), dimension(3) :: qpt, qe_q
+        real(kind=DP), dimension(3,3) :: kprim, qe_bg
+        real(kind=DP), dimension(3,nat) :: qe_tau
         real(kind=DP), dimension(3*nat) :: w2_q, w_q
         complex(kind=DP), dimension(3*nat, 3*nat) :: self_energy
+        real(kind=DP) :: qe_omega 
 !        complex(kind=DP), allocatable, dimension(:,:) :: self_energy
         complex(kind=DP), dimension(3*nat,3*nat) :: pols_q, d2_q
         real(kind=DP), allocatable, dimension(:,:) :: curr_grid
@@ -681,17 +727,23 @@ module get_lf
         if(nirrqpt <= nthreads) then
                 parallelize = .False.
         endif
+        qe_tau = pos * A_TO_BOHR / qe_alat
+        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
+        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
         
         !$OMP PARALLEL DO IF(parallelize) &
         !$OMP DEFAULT(SHARED) &
-        !$OMP PRIVATE(iqpt, w_neg_freqs, qpt, w2_q, pols_q, d2_q, is_q_gamma, self_energy, &
+        !$OMP PRIVATE(iqpt, w_neg_freqs, qpt, qe_q, w2_q, pols_q, d2_q, is_q_gamma, self_energy, &
         !$OMP curr_grid, w_q, curr_w, prev_events, tot_qpt)
         do iqpt = 1, nirrqpt
 
             w_neg_freqs = .False.
             print*, 'Calculating ', iqpt, ' point in the irreducible zone out of ', nirrqpt, '!'
             qpt = irrqgrid(:, iqpt) 
-            call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, qpt, w2_q, pols_q, d2_q)
+            qe_q = qpt*qe_alat/A_TO_BOHR
+            !call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, qpt, w2_q, pols_q, d2_q)
+            call interpolate_fc2(nfc2, nat, fc2, qe_zeu, dielectric_tensor, qe_bg, r2_2, masses, pos, qe_tau, &
+                               qpt, qe_q, qe_omega, qe_alat, long_range, w2_q, pols_q, d2_q)
             call check_if_gamma(nat, qpt, kprim, w2_q, is_q_gamma)
             if(any(w2_q < 0.0_DP)) then
                 print*, 'Negative eigenvalue of dynamical matrix! Exit!'
@@ -713,8 +765,9 @@ module get_lf
                     curr_w(jqpt) = weights(prev_events + jqpt)
                 enddo
                 call calculate_self_energy_P(w_q, qpt, pols_q, is_q_gamma, scatt_events(iqpt), nat, nfc2, &
-                            nfc3, 3*nat, curr_grid, curr_w, fc2, fc3, r2_2, r3_2, r3_3, pos, kprim, masses, &
-                            smear(:,iqpt), T, w_q, .not. parallelize, gaussian, classical, self_energy) 
+                            nfc3, 3*nat, curr_grid, curr_w, qe_zeu, fc2, fc3, r2_2, r3_2, r3_3, pos, kprim, &
+                            dielectric_tensor, masses, smear(:,iqpt), T, qe_alat, w_q, .not. parallelize, &
+                            gaussian, classical, long_range, self_energy) 
 
                 deallocate(curr_grid)
                 tot_qpt = sum(curr_w)
@@ -740,38 +793,41 @@ module get_lf
 
  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-    subroutine calculate_lifetimes(irrqgrid, qgrid, weights, scatt_events, fc2, r2_2, &
-                    fc3, r3_2, r3_3, rprim, pos, masses, smear, T, gaussian, classical, nirrqpt, &
-                    nat, nfc2, nfc3, n_events, self_energies)
+    subroutine calculate_lifetimes(irrqgrid, qgrid, weights, scatt_events, qe_zeu, fc2, r2_2, &
+                    fc3, r3_2, r3_3, rprim, dielectric_tensor, pos, masses, smear, T, qe_alat, gaussian, classical, &
+                    long_range, nirrqpt, nat, nfc2, nfc3, n_events, self_energies)
 
         use omp_lib
         implicit none
 
         integer, parameter :: DP = selected_real_kind(14,200)
-        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875
+        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875, A_TO_BOHR = 1.889725989_DP
 
         integer, intent(in) :: nirrqpt, nat, nfc2, nfc3, n_events
         integer, intent(in) :: weights(n_events), scatt_events(nirrqpt)
         real(kind=DP), intent(in) :: irrqgrid(3, nirrqpt)
         real(kind=DP), intent(in) :: qgrid(3, n_events)
+        real(kind=DP), intent(in) :: qe_zeu(3, 3, nat)
         real(kind=DP), intent(in) :: fc2(nfc2, 3*nat, 3*nat)
         real(kind=DP), intent(in) :: fc3(nfc3, 3*nat, 3*nat, 3*nat)
         real(kind=DP), intent(in) :: r2_2(3, nfc2)
         real(kind=DP), intent(in) :: r3_2(3, nfc3), r3_3(3, nfc3)
-        real(kind=DP), intent(in) :: rprim(3, 3)
+        real(kind=DP), intent(in) :: rprim(3, 3), dielectric_tensor(3,3)
         real(kind=DP), intent(in) :: pos(3, nat)
         real(kind=DP), intent(in) :: masses(nat)
         real(kind=DP), intent(in) :: smear(3*nat, nirrqpt)
-        real(kind=DP), intent(in) :: T
-        logical, intent(in) :: gaussian, classical
+        real(kind=DP), intent(in) :: T, qe_alat
+        logical, intent(in) :: gaussian, classical, long_range
         complex(kind=DP), dimension(nirrqpt, 3*nat), intent(out) :: self_energies
 
         integer :: iqpt, i, prev_events, jqpt, tot_qpt, nthreads
         real(kind=DP) :: start_time, curr_time
-        real(kind=DP), dimension(3) :: qpt
-        real(kind=DP), dimension(3,3) :: kprim
+        real(kind=DP), dimension(3) :: qpt, qe_q
+        real(kind=DP), dimension(3,3) :: kprim, qe_bg
+        real(kind=DP), dimension(3,nat) :: qe_tau
         real(kind=DP), dimension(3*nat) :: w2_q, w_q
         complex(kind=DP), dimension(3*nat) :: self_energy
+        real(kind=DP) :: qe_omega 
         complex(kind=DP), dimension(3*nat,3*nat) :: pols_q, d2_q
         real(kind=DP), allocatable, dimension(:,:) :: curr_grid
         integer, allocatable, dimension(:) :: curr_w
@@ -789,10 +845,13 @@ module get_lf
         if(nirrqpt <= nthreads) then
                 parallelize = .False.
         endif
+        qe_tau = pos * A_TO_BOHR / qe_alat
+        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
+        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
 
         !$OMP PARALLEL DO IF(parallelize) &
         !$OMP DEFAULT(SHARED) &
-        !$OMP PRIVATE(iqpt, w_neg_freqs, qpt, w2_q, pols_q, d2_q, is_q_gamma, self_energy, &
+        !$OMP PRIVATE(iqpt, w_neg_freqs, qpt, qe_q, w2_q, pols_q, d2_q, is_q_gamma, self_energy, &
         !$OMP curr_grid, w_q, curr_w, prev_events, tot_qpt)
         do iqpt = 1, nirrqpt
             
@@ -801,7 +860,10 @@ module get_lf
             !call cpu_time(curr_time)
             !print*, 'Since start: ', curr_time - start_time, ' seconds!'
             qpt = irrqgrid(:, iqpt) 
-            call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, qpt, w2_q, pols_q, d2_q)
+            qe_q = qpt*qe_alat/A_TO_BOHR
+            !call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, qpt, w2_q, pols_q, d2_q)
+            call interpolate_fc2(nfc2, nat, fc2, qe_zeu, dielectric_tensor, qe_bg, r2_2, masses, pos, qe_tau, &
+                               qpt, qe_q, qe_omega, qe_alat, long_range, w2_q, pols_q, d2_q)
             call check_if_gamma(nat, qpt, kprim, w2_q, is_q_gamma)
  !           print*, 'Got frequencies'
             if(any(w2_q < 0.0_DP)) then
@@ -824,8 +886,8 @@ module get_lf
                     curr_w(jqpt) = weights(prev_events + jqpt)
                 enddo
                 call calculate_self_energy_LA(w_q, qpt, pols_q, is_q_gamma, scatt_events(iqpt), nat, nfc2, nfc3, curr_grid, &
-                            curr_w, fc2, fc3, r2_2, r3_2, r3_3, pos, kprim, &
-                            masses, smear(:,iqpt), T, .not. parallelize, gaussian, classical, self_energy)
+                            curr_w, qe_zeu, fc2, fc3, r2_2, r3_2, r3_3, pos, kprim, dielectric_tensor, &
+                            masses, smear(:,iqpt), T, qe_alat, .not. parallelize, gaussian, classical, long_range, self_energy)
 
                 deallocate(curr_grid)
                 tot_qpt = sum(curr_w)
@@ -852,37 +914,40 @@ module get_lf
  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
     subroutine calculate_self_energy_LA(w_q, qpt, pols_q, is_q_gamma, nqpt, nat, nfc2, nfc3, &
-                    qgrid, weights, fc2, fc3, &
-                    r2_2, r3_2, r3_3, pos, kprim, masses, smear, T, parallelize, gaussian, classical, self_energy)
+                    qgrid, weights, qe_zeu, fc2, fc3, &
+                    r2_2, r3_2, r3_3, pos, kprim, dielectric_tensor, masses, smear, T, qe_alat, &
+                    parallelize, gaussian, classical, long_range, self_energy)
 
         use omp_lib
         use third_order_cond
 
         implicit none
         integer, parameter :: DP = selected_real_kind(14,200)
-        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875
+        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875, A_TO_BOHR = 1.889725989_DP
 
         integer, intent(in) :: nqpt, nat, nfc2, nfc3
         integer, intent(in) :: weights(nqpt)
         real(kind=DP), intent(in) :: w_q(3*nat), qpt(3), qgrid(3,nqpt)
-        real(kind=DP), intent(in) :: fc2(nfc2, 3*nat, 3*nat), kprim(3,3)
-        real(kind=DP), intent(in) :: fc3(nfc3, 3*nat, 3*nat, 3*nat)
+        real(kind=DP), intent(in) :: fc2(nfc2, 3*nat, 3*nat), kprim(3,3), dielectric_tensor(3,3)
+        real(kind=DP), intent(in) :: fc3(nfc3, 3*nat, 3*nat, 3*nat), qe_zeu(3,3,nat)
         real(kind=DP), intent(in) :: r2_2(3, nfc2), pos(3, nat)
         real(kind=DP), intent(in) :: r3_2(3, nfc3), r3_3(3, nfc3)
         real(kind=DP), intent(in) :: masses(nat)
         real(kind=DP), intent(in) :: smear(3*nat)
-        real(kind=DP), intent(in) :: T
+        real(kind=DP), intent(in) :: T, qe_alat
         complex(kind=DP), intent(in) :: pols_q(3*nat,3*nat)
-        logical, intent(in) :: is_q_gamma, parallelize, gaussian, classical
+        logical, intent(in) :: is_q_gamma, parallelize, gaussian, classical, long_range
         complex(kind=DP), intent(out) :: self_energy(3*nat)
 
         integer :: jqpt, iat, jat, kat, i, j, k, i1, j1, k1
-        real(kind=DP), dimension(3) :: kpt, mkpt, mkpt_r
+        real(kind=DP), dimension(3) :: kpt, mkpt, mkpt_r, qe_kpt, qe_mkpt
         real(kind=DP), dimension(3*nat) :: w2_k, w2_mk_mq
         real(kind=DP), dimension(3*nat) :: w_k, w_mk_mq
         real(kind=DP), allocatable, dimension(:,:,:) :: mass_array
         real(kind=DP), dimension(3*nat, 3) :: freqs_array
-        real(kind=DP), dimension(3, 3) :: ikprim 
+        real(kind=DP), dimension(3, 3*nat) :: qe_tau
+        real(kind=DP), dimension(3, 3) :: ikprim, rprim, qe_bg
+        real(kind=DP) :: qe_omega 
         complex(kind=DP), dimension(3*nat) :: selfnrg
         complex(kind=DP), dimension(3*nat,3*nat) :: pols_k, pols_mk_mq, pols_k2, pols_mk_mq2
 !        complex(kind=DP), dimension(3*nat, 3*nat, 3*nat) :: ifc3, d3, d3_pols
@@ -891,6 +956,7 @@ module get_lf
         logical, dimension(3) :: if_gammas
 
         ikprim = inv(kprim)
+        rprim = transpose(inv(kprim))
         self_energy = complex(0.0_DP, 0.0_DP)
         allocate(mass_array(3*nat, 3*nat, 3*nat))
         do iat = 1, nat
@@ -901,14 +967,18 @@ module get_lf
                 enddo
             enddo
         enddo
+        qe_tau = pos * A_TO_BOHR / qe_alat
+        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
+        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
 
   !      print*, 'Calculating self-energy!'
         !$OMP PARALLEL DO IF(parallelize) DEFAULT(NONE) &
-        !$OMP PRIVATE(i,j,k,i1,j1,k1, jqpt, ifc3, d3, d3_pols, kpt, mkpt, mkpt_r, is_k_gamma, is_mk_mq_gamma, w2_k, w2_mk_mq, &
-        !$OMP w_k, w_mk_mq, pols_k, pols_mk_mq, pols_k2, pols_mk_mq2, iat, jat, kat, freqs_array, if_gammas, &
+        !$OMP PRIVATE(i,j,k,i1,j1,k1, jqpt, ifc3, d3, d3_pols, kpt, qe_kpt, mkpt, qe_mkpt, mkpt_r, is_k_gamma, is_mk_mq_gamma, &
+        !$OMP w2_k, w2_mk_mq, w_k, w_mk_mq, pols_k, pols_mk_mq, pols_k2, pols_mk_mq2, iat, jat, kat, freqs_array, if_gammas, &
         !$OMP is_k_neg, is_mk_mq_neg, selfnrg, intermediate) &
-        !$OMP SHARED(nqpt, nat, fc3, r3_2, r3_3, pos, nfc2, nfc3, masses, fc2, smear, T, weights, qgrid, qpt, kprim, is_q_gamma, &
-        !$OMP r2_2, w_q, pols_q, mass_array, gaussian, classical, ikprim) &
+        !$OMP SHARED(nqpt, nat, fc3, r3_2, r3_3, pos, nfc2, nfc3, masses, qe_zeu, fc2, smear, T, qe_alat, weights, qgrid, qpt, &
+        !$OMP kprim, dielectric_tensor, is_q_gamma, qe_omega, qe_bg, qe_tau, &
+        !$OMP r2_2, w_q, pols_q, mass_array, gaussian, classical, long_range, ikprim) &
         !$OMP REDUCTION(+:self_energy)
         do jqpt = 1, nqpt
 !            print*, jqpt
@@ -921,6 +991,7 @@ module get_lf
             d3_pols(:,:,:) = complex(0.0_DP, 0.0_DP) 
 
             kpt = qgrid(:, jqpt)
+            qe_kpt = kpt*qe_alat/A_TO_BOHR
             mkpt = -1.0_DP*qpt - kpt
             do i = 1, 3
                 mkpt_r(i) = dot_product(mkpt, ikprim(:,i))
@@ -933,10 +1004,15 @@ module get_lf
             do i = 1, 3
                 mkpt(i) = dot_product(mkpt_r, kprim(:,i))
             enddo
+            qe_mkpt = mkpt*qe_alat/A_TO_BOHR
             call interpol_v2(fc3, r3_2, r3_3,pos, kpt, mkpt, ifc3, nfc3, nat)
            ! call interpol_v3(fc3, pos, r3_2, r3_3, qpt, kpt, mkpt, ifc3, nfc3, nat)
-            call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, kpt, w2_k, pols_k, pols_k2)
-            call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, mkpt, w2_mk_mq, pols_mk_mq, pols_mk_mq2)
+            !call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, kpt, w2_k, pols_k, pols_k2)
+            call interpolate_fc2(nfc2, nat, fc2, qe_zeu, dielectric_tensor, qe_bg, r2_2, masses, pos, qe_tau, &
+                               kpt, qe_kpt, qe_omega, qe_alat, long_range, w2_k, pols_k, pols_k2)
+            !call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, mkpt, w2_mk_mq, pols_mk_mq, pols_mk_mq2)
+            call interpolate_fc2(nfc2, nat, fc2, qe_zeu, dielectric_tensor, qe_bg, r2_2, masses, pos, qe_tau, &
+                               mkpt, qe_mkpt, qe_omega, qe_alat, long_range, w2_mk_mq, pols_mk_mq, pols_mk_mq2)
     
             call check_if_gamma(nat, kpt, kprim, w2_k, is_k_gamma)
             call check_if_gamma(nat, mkpt, kprim, w2_mk_mq, is_mk_mq_gamma)
@@ -992,28 +1068,28 @@ module get_lf
  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
     subroutine calculate_self_energy_P(w_q, qpt, pols_q, is_q_gamma, nqpt, nat, nfc2, nfc3, ne, qgrid, &
-                    weights, fc2, fc3, r2_2, r3_2, r3_3, pos, kprim, masses, smear, T, energies, &
-                    parallelize, gaussian, classical, self_energy)
+                    weights, qe_zeu, fc2, fc3, r2_2, r3_2, r3_3, pos, kprim, dielectric_tensor, masses, &
+                    smear, T, qe_alat, energies, parallelize, gaussian, classical, long_range, self_energy)
 
         use omp_lib
         use third_order_cond
 
         implicit none
         integer, parameter :: DP = selected_real_kind(14,200)
-        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875
+        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875, A_TO_BOHR = 1.889725989_DP
 
         integer, intent(in) :: nqpt, nat, nfc2, nfc3, ne
         integer, intent(in) :: weights(nqpt)
         real(kind=DP), intent(in) :: w_q(3*nat), qpt(3), qgrid(3,nqpt)
-        real(kind=DP), intent(in) :: fc2(nfc2, 3*nat, 3*nat), kprim(3,3)
-        real(kind=DP), intent(in) :: fc3(nfc3, 3*nat, 3*nat, 3*nat)
+        real(kind=DP), intent(in) :: fc2(nfc2, 3*nat, 3*nat), kprim(3,3), dielectric_tensor(3,3)
+        real(kind=DP), intent(in) :: fc3(nfc3, 3*nat, 3*nat, 3*nat), qe_zeu(3,3,nat)
         real(kind=DP), intent(in) :: r2_2(3, nfc2), pos(3, nat)
         real(kind=DP), intent(in) :: r3_2(3, nfc3), r3_3(3, nfc3)
         real(kind=DP), intent(in) :: masses(nat)
         real(kind=DP), intent(in) :: smear(3*nat), energies(ne)
-        real(kind=DP), intent(in) :: T
+        real(kind=DP), intent(in) :: T, qe_alat
         complex(kind=DP), intent(in) :: pols_q(3*nat,3*nat)
-        logical, intent(in) :: is_q_gamma, parallelize, gaussian, classical
+        logical, intent(in) :: is_q_gamma, parallelize, gaussian, classical, long_range
         complex(kind=DP), intent(out) :: self_energy(ne, 3*nat)
 
         integer :: jqpt, iat, jat, kat, i, j, k, i1, j1, k1
@@ -1021,17 +1097,21 @@ module get_lf
 !        real(kind=DP), dimension(3*nat) :: w2_k, w2_mk_mq
 !        real(kind=DP), dimension(3*nat) :: w_k, w_mk_mq
         real(kind=DP), allocatable, dimension(:) :: kpt, mkpt, w2_k, w2_mk_mq, w_k, w_mk_mq
+        real(kind=DP), allocatable, dimension(:) :: qe_kpt, qe_mkpt
 !        real(kind=DP), dimension(3*nat, 3) :: freqs_array
-        real(kind=DP), allocatable, dimension(:, :) :: freqs_array
+        real(kind=DP), allocatable, dimension(:, :) :: freqs_array, rprim, qe_tau, qe_bg
         real(kind=DP), allocatable, dimension(:, :, :) :: mass_array
         !complex(kind=DP), dimension(ne, 3*nat) :: selfnrg
         complex(kind=DP), allocatable, dimension(:, :) :: selfnrg
         complex(kind=DP), allocatable,dimension(:,:) :: pols_k, pols_mk_mq, pols_k2, pols_mk_mq2
         complex(kind=DP), allocatable, dimension(:, :, :) :: ifc3, d3, d3_pols, intermediate
+        real(kind=DP) :: qe_omega 
         logical :: is_k_gamma, is_mk_mq_gamma, is_k_neg, is_mk_mq_neg
         logical, dimension(3) :: if_gammas
 
 
+        allocate(rprim(3,3), qe_tau(3, nat), qe_bg(3,3))
+        rprim = transpose(inv(kprim))
 !        allocate(self_energy(ne, 3*nat))
         self_energy = complex(0.0_DP, 0.0_DP)
 !        allocate(mass_array(3*nat, 3*nat, 3*nat))
@@ -1043,15 +1123,19 @@ module get_lf
 !                enddo
 !            enddo
 !        enddo
+        qe_tau = pos * A_TO_BOHR / qe_alat
+        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
+        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
 
 !        print*, 'Starting with self energy!'
         !$OMP PARALLEL DO IF(parallelize) &
         !$OMP DEFAULT(NONE) &
-        !$OMP PRIVATE(jqpt, ifc3, d3, d3_pols, kpt, mkpt, w2_k, pols_k, pols_k2, w2_mk_mq, pols_mk_mq, pols_mk_mq2,&
-        !$OMP  is_k_gamma, is_mk_mq_gamma, intermediate, &
+        !$OMP PRIVATE(jqpt, ifc3, d3, d3_pols, kpt, mkpt, qe_kpt, qe_mkpt, w2_k, pols_k, pols_k2, &
+        !$OMP w2_mk_mq, pols_mk_mq, pols_mk_mq2, is_k_gamma, is_mk_mq_gamma, intermediate, &
         !$OMP is_k_neg, is_mk_mq_neg, w_k, w_mk_mq, i,j,k,i1,j1,k1,iat,jat,kat, freqs_array, if_gammas, selfnrg) &
-        !$OMP SHARED(nqpt, qgrid, fc3, r3_2, r3_3, pos, qpt, nfc3, nat, nfc2, fc2, r2_2, masses, is_q_gamma, smear, &
-        !$OMP T, energies, ne, w_q, pols_q,weights, kprim, gaussian, classical) &
+        !$OMP SHARED(nqpt, qgrid, fc3, r3_2, r3_3, pos, qe_tau, qpt, nfc3, nat, nfc2, qe_zeu, fc2, r2_2, masses, &
+        !$OMP is_q_gamma, smear, T, qe_alat, qe_omega, energies, ne, w_q, pols_q,weights, kprim, &
+        !$OMP dielectric_tensor, qe_bg, gaussian, classical, long_range) &
         !$OMP REDUCTION(+:self_energy)
         do jqpt = 1, nqpt
 !            print*, jqpt
@@ -1060,7 +1144,7 @@ module get_lf
             allocate(selfnrg(ne, 3*nat))
             allocate(pols_k(3*nat,3*nat), pols_mk_mq(3*nat,3*nat))
             allocate(pols_k2(3*nat,3*nat), pols_mk_mq2(3*nat,3*nat))
-            allocate(kpt(3), mkpt(3))
+            allocate(kpt(3), mkpt(3),qe_kpt(3), qe_mkpt(3))
             allocate(w2_k(3*nat), w2_mk_mq(3*nat), w_k(3*nat), w_mk_mq(3*nat))
             allocate(freqs_array(3*nat, 3))
             is_k_neg = .False.
@@ -1070,10 +1154,16 @@ module get_lf
             d3_pols(:,:,:) = complex(0.0_DP, 0.0_DP) 
 
             kpt = qgrid(:, jqpt)
+            qe_kpt = kpt*qe_alat/A_TO_BOHR
             mkpt = -1.0_DP*qpt - kpt
+            qe_mkpt = mkpt*qe_alat/A_TO_BOHR
             call interpol_v2(fc3, r3_2, r3_3, pos, kpt, mkpt, ifc3, nfc3, nat)
-            call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, kpt, w2_k, pols_k, pols_k2)
-            call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, mkpt, w2_mk_mq, pols_mk_mq, pols_mk_mq2)
+            !call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, kpt, w2_k, pols_k, pols_k2)
+            call interpolate_fc2(nfc2, nat, fc2, qe_zeu, dielectric_tensor, qe_bg, r2_2, masses, pos, qe_tau, &
+                               kpt, qe_kpt, qe_omega, qe_alat,long_range, w2_k, pols_k, pols_k2)
+            !call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, mkpt, w2_mk_mq, pols_mk_mq, pols_mk_mq2)
+            call interpolate_fc2(nfc2, nat, fc2, qe_zeu, dielectric_tensor, qe_bg, r2_2, masses, pos, qe_tau, &
+                               mkpt, qe_mkpt, qe_omega, qe_alat, long_range, w2_mk_mq, pols_mk_mq, pols_mk_mq2)
     
             call check_if_gamma(nat, kpt, kprim, w2_k, is_k_gamma)
             call check_if_gamma(nat, mkpt, kprim, w2_mk_mq, is_mk_mq_gamma)
@@ -1174,50 +1264,58 @@ module get_lf
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
     subroutine calculate_self_energy_full(w_q, qpt, pols_q, is_q_gamma, nqpt, nat, nfc2, nfc3, ne, qgrid, &
-                    weights, fc2, fc3, r2_2, r3_2, r3_3, pos, kprim, masses, smear, T, energies, &
-                    parallelize, gaussian, classical, self_energy)
+                    weights, qe_zeu, fc2, fc3, r2_2, r3_2, r3_3, pos, kprim, dielectric_tensor, masses, &
+                    smear, T, qe_alat, energies, parallelize, gaussian, classical, long_range, self_energy)
 
         use omp_lib
         use third_order_cond
 
         implicit none
         integer, parameter :: DP = selected_real_kind(14,200)
-        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875
+        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875, A_TO_BOHR = 1.889725989_DP
 
         integer, intent(in) :: nqpt, nat, nfc2, nfc3, ne
         integer, intent(in) :: weights(nqpt)
         real(kind=DP), intent(in) :: w_q(3*nat), qpt(3), qgrid(3,nqpt)
-        real(kind=DP), intent(in) :: fc2(nfc2, 3*nat, 3*nat), kprim(3,3)
-        real(kind=DP), intent(in) :: fc3(nfc3, 3*nat, 3*nat, 3*nat)
+        real(kind=DP), intent(in) :: fc2(nfc2, 3*nat, 3*nat), kprim(3,3), dielectric_tensor(3,3)
+        real(kind=DP), intent(in) :: fc3(nfc3, 3*nat, 3*nat, 3*nat), qe_zeu(3,3,nat)
         real(kind=DP), intent(in) :: r2_2(3, nfc2), pos(3, nat)
         real(kind=DP), intent(in) :: r3_2(3, nfc3), r3_3(3, nfc3)
         real(kind=DP), intent(in) :: masses(nat)
         real(kind=DP), intent(in) :: smear(3*nat), energies(ne)
-        real(kind=DP), intent(in) :: T
+        real(kind=DP), intent(in) :: T, qe_alat
         complex(kind=DP), intent(in) :: pols_q(3*nat,3*nat)
-        logical, intent(in) :: is_q_gamma, parallelize, gaussian, classical
+        logical, intent(in) :: is_q_gamma, parallelize, gaussian, classical, long_range
         complex(kind=DP), intent(out) :: self_energy(ne, 3*nat, 3*nat)
 
         integer :: jqpt, iat, jat, kat, i, j, k, i1, j1, k1
         real(kind=DP), allocatable, dimension(:) :: kpt, mkpt, w2_k, w2_mk_mq, w_k, w_mk_mq
-        real(kind=DP), allocatable, dimension(:, :) :: freqs_array
+        real(kind=DP), allocatable, dimension(:) :: qe_kpt, qe_mkpt
+        real(kind=DP), allocatable, dimension(:, :) :: freqs_array, rprim, qe_tau, qe_bg
         real(kind=DP), allocatable, dimension(:, :, :) :: mass_array
         complex(kind=DP), allocatable, dimension(:, :, :) :: selfnrg
         complex(kind=DP), allocatable,dimension(:,:) :: pols_k, pols_mk_mq, pols_k2, pols_mk_mq2
         complex(kind=DP), allocatable, dimension(:, :, :) :: ifc3, d3, d3_pols, intermediate
+        real(kind=DP) :: qe_omega 
         logical :: is_k_gamma, is_mk_mq_gamma, is_k_neg, is_mk_mq_neg
         logical, dimension(3) :: if_gammas
         
+        allocate(rprim(3,3), qe_tau(3, nat), qe_bg(3,3))
+        rprim = transpose(inv(kprim))
         !print*, 'Initialize self energy!'
         self_energy(:,:,:) = complex(0.0_DP, 0.0_DP)
+        qe_tau = pos * A_TO_BOHR / qe_alat
+        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
+        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
         !print*, 'Initialized self energy!'
         !$OMP PARALLEL DO IF(parallelize) &
         !$OMP DEFAULT(NONE) &
-        !$OMP PRIVATE(jqpt, ifc3, d3, d3_pols, kpt, mkpt, w2_k, pols_k, pols_k2, w2_mk_mq, pols_mk_mq, pols_mk_mq2,&
-        !$OMP  is_k_gamma, is_mk_mq_gamma, intermediate, &
+        !$OMP PRIVATE(jqpt, ifc3, d3, d3_pols, kpt, mkpt, qe_kpt, qe_mkpt, w2_k, pols_k, pols_k2, &
+        !$OMP w2_mk_mq, pols_mk_mq, pols_mk_mq2, is_k_gamma, is_mk_mq_gamma, intermediate, &
         !$OMP is_k_neg, is_mk_mq_neg, w_k, w_mk_mq, i,j,k,i1,j1,k1,iat,jat,kat, freqs_array, if_gammas, selfnrg) &
-        !$OMP SHARED(nqpt, qgrid, fc3, r3_2, r3_3, pos, qpt, nfc3, nat, nfc2, fc2, r2_2, masses, is_q_gamma, smear, &
-        !$OMP T, energies, ne, w_q, pols_q,weights, kprim, gaussian, classical) &
+        !$OMP SHARED(nqpt, qgrid, fc3, r3_2, r3_3, pos, qpt, nfc3, nat, nfc2, qe_zeu, fc2, r2_2, masses, is_q_gamma, smear, &
+        !$OMP T, qe_alat, qe_omega, energies, ne, w_q, pols_q,weights, kprim, dielectric_tensor, qe_bg, qe_tau, &
+        !$OMP gaussian, classical, long_range) &
         !$OMP REDUCTION(+:self_energy)
         do jqpt = 1, nqpt
             !print*, jqpt
@@ -1236,10 +1334,16 @@ module get_lf
             d3_pols(:,:,:) = complex(0.0_DP, 0.0_DP) 
 
             kpt = qgrid(:, jqpt)
+            qe_kpt = kpt*qe_alat/A_TO_BOHR
             mkpt = -1.0_DP*qpt - kpt
+            qe_mkpt = mkpt*qe_alat/A_TO_BOHR
             call interpol_v2(fc3, r3_2, r3_3, pos, kpt, mkpt, ifc3, nfc3, nat)
-            call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, kpt, w2_k, pols_k, pols_k2)
-            call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, mkpt, w2_mk_mq, pols_mk_mq, pols_mk_mq2)
+            !call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, kpt, w2_k, pols_k, pols_k2)
+            call interpolate_fc2(nfc2, nat, fc2, qe_zeu, dielectric_tensor, qe_bg, r2_2, masses, pos, qe_tau, &
+                               kpt, qe_kpt, qe_omega, qe_alat, long_range, w2_k, pols_k, pols_k2)
+            !call interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, mkpt, w2_mk_mq, pols_mk_mq, pols_mk_mq2)
+            call interpolate_fc2(nfc2, nat, fc2, qe_zeu, dielectric_tensor, qe_bg, r2_2, masses, pos, qe_tau, &
+                               mkpt, qe_mkpt, qe_omega, qe_alat, long_range, w2_mk_mq, pols_mk_mq, pols_mk_mq2)
     
             call check_if_gamma(nat, kpt, kprim, w2_k, is_k_gamma)
             call check_if_gamma(nat, mkpt, kprim, w2_mk_mq, is_mk_mq_gamma)
@@ -1397,6 +1501,25 @@ module get_lf
         enddo 
 
  end function vec_dot_mat
+
+ !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+ function cross(v1, v2) result (v3)
+
+        implicit none
+        integer, parameter :: DP = selected_real_kind(14,200)
+
+        real(kind=DP),intent(in) :: v1(3), v2(3)
+        real(kind=DP) :: v3(3)
+
+        integer :: i
+
+        v3 = 0.0_DP
+        v3(1) = v1(2) * v2(3) - v1(3) * v2(2)
+        v3(2) = v1(3) * v2(1) - v1(1) * v2(3)
+        v3(3) = v1(1) * v2(2) - v1(2) * v2(1)
+
+ end function cross
 
  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
@@ -1629,7 +1752,8 @@ module get_lf
  
  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-    subroutine interpolate_fc2(nfc2, nat, fc2, r2_2, masses, pos, q, w2_q, pols_q, pols_q1)
+    subroutine interpolate_fc2(nfc2, nat, fc2, qe_zeu, dielectric_tensor, qe_bg, r2_2, masses, pos, qe_tau, &
+                               q, qe_q, qe_omega, qe_alat, long_range, w2_q, pols_q, pols_q1)
 
         implicit none        
         integer, parameter :: DP = selected_real_kind(14,200)
@@ -1637,11 +1761,14 @@ module get_lf
 
         integer, intent(in) :: nfc2, nat
         real(kind=DP), dimension(nfc2, 3*nat, 3*nat), intent(in) :: fc2 
+        real(kind=DP), dimension(3, 3, nat), intent(in) :: qe_zeu
         real(kind=DP), dimension(3, nfc2), intent(in) :: r2_2
-        real(kind=DP), dimension(3, nat), intent(in) :: pos
+        real(kind=DP), dimension(3, nat), intent(in) :: pos, qe_tau
+        real(kind=DP), dimension(3,3), intent(in) :: qe_bg, dielectric_tensor
         real(kind=DP), dimension(nat), intent(in) :: masses
-        real(kind=DP), dimension(3), intent(in) :: q
-
+        real(kind=DP), dimension(3), intent(in) :: q, qe_q
+        real(kind=DP), intent(in) :: qe_omega, qe_alat
+        logical, intent(in) :: long_range
         real(kind=DP), dimension(3*nat), intent(out) :: w2_q
         complex(kind=DP), dimension(3*nat, 3*nat), intent(out) :: pols_q, pols_q1
 
@@ -1649,7 +1776,7 @@ module get_lf
         real(kind=DP), dimension(3) :: ruc
         complex(kind=DP), dimension(6*nat + 1) :: WORK
         real(kind=DP), dimension(9*nat - 2) :: RWORK
-        real(kind=DP) :: phase 
+        real(kind=DP) :: phase
 
 
         pols_q1 = complex(0.0_DP,0.0_DP)
@@ -1666,6 +1793,10 @@ module get_lf
             enddo
             enddo
         enddo
+
+        if(long_range) then
+           call add_long_range(nat, pos, dielectric_tensor, qe_zeu, qe_q, qe_tau, qe_bg, qe_omega, qe_alat, pols_q1)
+        endif
 
         do iat = 1, nat
         do i = 1, 3 
@@ -1684,5 +1815,406 @@ module get_lf
         LWORK = MIN( size(WORK), INT( WORK( 1 ) ) )
         call zheev('V', 'L', 3*nat, pols_q, 3*nat, w2_q, WORK, LWORK, RWORK, INFO)
     end subroutine
+
+    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+    subroutine add_long_range(nat, pos, dielectric_tensor, qe_zeu, qe_q, qe_tau, qe_bg, qe_omega, qe_alat, pols_q1)
+
+        implicit none        
+        integer, parameter :: DP = selected_real_kind(14,200)
+        real(kind=DP), parameter :: PI = 3.141592653589793115997963468544185161590576171875, A_TO_BOHR = 1.889725989_DP
+
+        integer, intent(in) :: nat
+        real(kind=DP), intent(in) :: qe_omega, qe_alat
+        real(kind=DP), dimension(3, nat), intent(in) :: pos, qe_tau
+        real(kind=DP), dimension(3, 3, nat), intent(in) :: qe_zeu
+        real(kind=DP), dimension(3,3), intent(in) :: qe_bg, dielectric_tensor
+        real(kind=DP), dimension(3), intent(in) :: qe_q
+
+        complex(kind=DP), dimension(3*nat, 3*nat), intent(inout) :: pols_q1
+
+        integer :: ir, iat, jat, i, j, qe_itau(nat)
+        complex(kind=DP), dimension(3, 3, nat, nat) :: pols_q2
+        real(kind=DP), dimension(3) :: ruc, q_vect
+        real(kind=DP) :: phase
+
+        pols_q2 = complex(0.0_DP, 0.0_DP)
+        do iat = 1, nat
+           qe_itau(iat) = iat
+           do jat = 1, nat
+              do i = 1, 3
+                 do j = 1, 3
+                    pols_q2(j,i,jat,iat) = pols_q1(3*(jat - 1) + j, 3*(iat-1) + i)
+                 enddo
+              enddo
+           enddo
+        enddo
+
+        call rgd_blk_diff(0, 0, 0, nat, pols_q2, qe_q, qe_tau, dielectric_tensor, qe_zeu, qe_bg, qe_omega, qe_alat, 0, +1.0)
+
+        if(sqrt(dot_product(qe_q, qe_q)) < 1.0d-8) then
+           call random_number(q_vect)
+           q_vect = q_vect/sqrt(dot_product(q_vect,q_vect))
+           call nonanal(nat, nat, qe_itau, dielectric_tensor, q_vect, qe_zeu, qe_omega, pols_q2)
+        endif
+
+        do iat = 1, nat
+           qe_itau(iat) = iat
+           do jat = 1, nat
+              do i = 1, 3
+                 do j = 1, 3
+                    pols_q1(3*(jat - 1) + j, 3*(iat-1) + i) = pols_q2(j,i,jat,iat)
+                 enddo
+              enddo
+           enddo
+        enddo
+
+    end subroutine
+
+    subroutine rgd_blk (nr1,nr2,nr3,nat,dyn,q,tau,epsil,zeu,bg,omega,alat,loto_2d,sign)
+           !-----------------------------------------------------------------------
+           ! compute the rigid-ion (long-range) term for q
+           ! The long-range term used here, to be added to or subtracted from the
+           ! dynamical matrices, is exactly the same of the formula introduced in:
+           ! X. Gonze et al, PRB 50. 13035 (1994) . Only the G-space term is
+           ! implemented: the Ewald parameter alpha must be large enough to
+           ! have negligible r-space contribution
+           !
+           use kinds, only: dp
+           use constants, only: pi,tpi, fpi, e2
+           implicit none
+           integer ::  nr1, nr2, nr3    !  FFT grid
+           integer ::  nat              ! number of atoms
+           complex(DP) :: dyn(3,3,nat,nat) ! dynamical matrix
+           real(DP) &
+                q(3),           &! q-vector
+                tau(3,nat),     &! atomic positions
+                epsil(3,3),     &! dielectric constant tensor
+                zeu(3,3,nat),   &! effective charges tensor
+                at(3,3),        &! direct     lattice basis vectors
+                bg(3,3),        &! reciprocal lattice basis vectors
+                omega,          &! unit cell volume
+                alat,           &! cell dimension units 
+                sign             ! sign=+/-1.0 ==> add/subtract rigid-ion term
+           logical :: loto_2d ! 2D LOTO correction 
+           !
+           ! local variables
+           !
+           real(DP):: geg, gp2, r                    !  <q+G| epsil | q+G>,  For 2d loto: gp2, r
+           integer :: na,nb, i,j, m1, m2, m3
+           integer :: nr1x, nr2x, nr3x
+           real(DP) :: alph, fac,g1,g2,g3, facgd, arg, gmax, alat_new
+           real(DP) :: zag(3),zbg(3),zcg(3), fnat(3), reff(2,2)
+           real :: time1, time2
+           complex(dp) :: facg
+           !
+           ! alph is the Ewald parameter, geg is an estimate of G^2
+           ! such that the G-space sum is convergent for that alph
+           ! very rough estimate: geg/4/alph > gmax = 14
+           ! (exp (-14) = 10^-6)
+           !
+           call cpu_time(time1)
+           gmax= 14.d0
+           alph= 1.0d0
+           geg = gmax*alph*4.0d0
+         
+            !print *, ""
+            !print *, "[RGD_BLK] Q = ", q
+            !print *, "[RGD_BLK] NAT:", nat
+            !print *, "[RGD_BLK] OMEGA:", omega
+            !print *, "[RGD_BLK] ZEU:"
+            !do i = 1, nat
+            !   do j = 1, 3
+            !      print *, zeu(:, j, i)
+            !   enddo
+            !end do
+            !print *, "[RGD_BLK] ALAT:", alat
+            !print *, "[RGD_BLK] BG:"
+            !do i = 1, 3
+            !   print *, bg(:, i)
+            !end do
+            !print *, "[RGD_BLK] TAU:"
+            !do i = 1, nat
+            !   print *, tau(:, i)
+            !end do
+
+            !print *, "[RGD_BLK] EPSIL:"
+            !do i = 1, 3
+            !   print *, epsil(:, i)
+            !end do
+         
+            !print *, "[RGD_BLK] DYN:"
+            !do na = 1, nat
+            !   do nb = 1, nat
+            !      do i = 1, 3
+            !         print *,  dyn(:, i, na, nb)
+            !      end do
+            !   end do
+            !end do
+           
+           ! Silicon 
+           alat_new = 10.0d0
+           
+         
+           ! Estimate of nr1x,nr2x,nr3x generating all vectors up to G^2 < geg
+           ! Only for dimensions where periodicity is present, e.g. if nr1=1
+           ! and nr2=1, then the G-vectors run along nr3 only.
+           ! (useful if system is in vacuum, e.g. 1D or 2D)
+           !
+           if (nr1 == 1) then
+              nr1x=0
+           else
+              nr1x = int ( sqrt (geg) / &
+                           (sqrt (bg (1, 1) **2 + bg (2, 1) **2 + bg (3, 1) **2) )) + 1
+           endif
+           if (nr2 == 1) then
+              nr2x=0
+           else
+              nr2x = int ( sqrt (geg) / &
+                           ( sqrt (bg (1, 2) **2 + bg (2, 2) **2 + bg (3, 2) **2) )) + 1
+           endif
+           if (nr3 == 1) then
+              nr3x=0
+           else
+              nr3x = int ( sqrt (geg) / &
+                           (sqrt (bg (1, 3) **2 + bg (2, 3) **2 + bg (3, 3) **2) )) + 1
+           endif
+           !
+         
+           !print *, "[RGD_BLK] integration grid:", nr1x, nr2x, nr3x
+           if (abs(sign) /= 1.0_DP) &
+                call errore ('rgd_blk',' wrong value for sign ',1)
+           !
+           IF (loto_2d) THEN 
+              fac = sign*e2*fpi/omega*0.5d0*alat/bg(3,3)
+              reff=0.0d0
+              DO i=1,2
+                 DO j=1,2
+                    reff(i,j)=epsil(i,j)*0.5d0*tpi/bg(3,3) ! (eps)*c/2 in 2pi/a units
+                 ENDDO
+              ENDDO
+              DO i=1,2
+                 reff(i,i)=reff(i,i)-0.5d0*tpi/bg(3,3) ! (-1)*c/2 in 2pi/a units
+              ENDDO 
+           ELSE
+             fac = sign*e2*fpi/omega
+           ENDIF
+           do m1 = -nr1x,nr1x
+           do m2 = -nr2x,nr2x
+           do m3 = -nr3x,nr3x
+              !
+              g1 = m1*bg(1,1) + m2*bg(1,2) + m3*bg(1,3)
+              g2 = m1*bg(2,1) + m2*bg(2,2) + m3*bg(2,3)
+              g3 = m1*bg(3,1) + m2*bg(3,2) + m3*bg(3,3)
+              !
+              IF (loto_2d) THEN 
+                 geg = g1**2 + g2**2 + g3**2
+                 r=0.0d0
+                 gp2=g1**2+g2**2
+                 IF (gp2>1.0d-8) THEN
+                    r=g1*reff(1,1)*g1+g1*reff(1,2)*g2+g2*reff(2,1)*g1+g2*reff(2,2)*g2
+                    r=r/gp2
+                 ENDIF
+              ELSE
+                  geg = (g1*(epsil(1,1)*g1+epsil(1,2)*g2+epsil(1,3)*g3)+      &
+                     g2*(epsil(2,1)*g1+epsil(2,2)*g2+epsil(2,3)*g3)+      &
+                     g3*(epsil(3,1)*g1+epsil(3,2)*g2+epsil(3,3)*g3))
+              ENDIF
+              !
+              if (geg > 0.0_DP .and. geg/alph/4.0_DP < gmax ) then
+                 !
+                 IF (loto_2d) THEN 
+                   facgd = fac*exp(-geg/alph/4.0d0)/SQRT(geg)/(1.0+r*SQRT(geg)) 
+                 ELSE
+                   facgd = fac*exp(-geg/alph/4.0d0)/geg
+                 ENDIF
+                 !
+                 do na = 1,nat
+                    zag(:)=g1*zeu(1,:,na)+g2*zeu(2,:,na)+g3*zeu(3,:,na)
+                    fnat(:) = 0.d0
+                    do nb = 1,nat
+                       arg = 2.d0*pi* (g1 * (tau(1,na)-tau(1,nb))+             &
+                                       g2 * (tau(2,na)-tau(2,nb))+             &
+                                       g3 * (tau(3,na)-tau(3,nb)))
+                       zcg(:) = g1*zeu(1,:,nb) + g2*zeu(2,:,nb) + g3*zeu(3,:,nb)
+                       fnat(:) = fnat(:) + zcg(:)*cos(arg)
+                    end do
+                    do j=1,3
+                       do i=1,3
+                          dyn(i,j,na,na) = dyn(i,j,na,na) - facgd * &
+                                           zag(i) * fnat(j)
+                       end do
+                    end do
+                 end do
+              end if
+              !
+              g1 = g1 + q(1)
+              g2 = g2 + q(2)
+              g3 = g3 + q(3)
+              !
+              IF (loto_2d) THEN 
+                 geg = g1**2+g2**2+g3**2
+                 r=0.0d0
+                 gp2=g1**2+g2**2
+                 IF (gp2>1.0d-8) THEN
+                    r=g1*reff(1,1)*g1+g1*reff(1,2)*g2+g2*reff(2,1)*g1+g2*reff(2,2)*g2
+                    r=r/gp2
+                 ENDIF
+              ELSE
+              geg = (g1*(epsil(1,1)*g1+epsil(1,2)*g2+epsil(1,3)*g3)+      &
+                     g2*(epsil(2,1)*g1+epsil(2,2)*g2+epsil(2,3)*g3)+      &
+                     g3*(epsil(3,1)*g1+epsil(3,2)*g2+epsil(3,3)*g3))
+              ENDIF
+              !
+              if (geg > 0.0_DP .and. geg/alph/4.0_DP < gmax ) then
+                 !
+                 IF (loto_2d) THEN 
+                   facgd = fac*exp(-geg/alph/4.0d0)/SQRT(geg)/(1.0+r*SQRT(geg))
+                 ELSE
+                   facgd = fac*exp(-geg/alph/4.0d0)/geg
+                 ENDIF
+                 !
+                 do nb = 1,nat
+                    zbg(:)=g1*zeu(1,:,nb)+g2*zeu(2,:,nb)+g3*zeu(3,:,nb)
+                    do na = 1,nat
+                       zag(:)=g1*zeu(1,:,na)+g2*zeu(2,:,na)+g3*zeu(3,:,na)
+                       arg = 2.d0*pi* (g1 * (tau(1,na)-tau(1,nb))+             &
+                                       g2 * (tau(2,na)-tau(2,nb))+             &
+                                       g3 * (tau(3,na)-tau(3,nb)))
+                       !
+                       facg = facgd * CMPLX(cos(arg),sin(arg),kind=DP)
+                       do j=1,3
+                          do i=1,3
+                             dyn(i,j,na,nb) = dyn(i,j,na,nb) + facg *      &
+                                              zag(i) * zbg(j)
+                          end do
+                       end do
+                    end do
+                 end do
+              end if
+           end do
+           end do
+         end do
+         
+        !  call cpu_time(time2)
+        !  print *, "Elapsed time in rgd_blk: ", time2 - time1
+         
+         
+        !   print *, ""
+        !   print *, "[RGD_BLK] DYN FINAL:"
+        !   do na = 1, nat
+        !      do nb = 1, nat
+        !         do i = 1, 3
+        !            print *,  dyn(:, i, na, nb)
+        !         end do
+        !      end do
+        !   end do
+         
+        !   print *, ""
+        !   print *, ""
+        !  print *, "----------------------------------------------------"
+         
+          
+         
+           !
+           return
+           !
+         end subroutine rgd_blk
+         
+        !-----------------------------------------------------------------------
+        subroutine nonanal(nat, nat_blk, itau_blk, epsil, q, zeu, omega, dyn )
+          !-----------------------------------------------------------------------
+          !     add the nonanalytical term with macroscopic electric fields
+          !     See PRB 55, 10355 (1997) Eq (60)
+          !
+          use kinds, only: dp
+          use constants, only: pi, fpi, e2
+         implicit none
+         integer, intent(in) :: nat, nat_blk, itau_blk(nat)
+         !  nat: number of atoms in the cell (in the supercell in the case
+         !       of a dyn.mat. constructed in the mass approximation)
+         !  nat_blk: number of atoms in the original cell (the same as nat if
+         !       we are not using the mass approximation to build a supercell)
+         !  itau_blk(na): atom in the original cell corresponding to
+         !                atom na in the supercell
+         !
+         complex(DP), intent(inout) :: dyn(3,3,nat,nat) ! dynamical matrix
+         real(DP), intent(in) :: q(3),  &! polarization vector
+              &       epsil(3,3),     &! dielectric constant tensor
+              &       zeu(3,3,nat_blk),   &! effective charges tensor
+              &       omega            ! unit cell volume
+         !
+         ! local variables
+         !
+         real(DP) zag(3),zbg(3),  &! eff. charges  times g-vector
+              &       qeq              !  <q| epsil | q>
+         integer na,nb,              &! counters on atoms
+              &  na_blk,nb_blk,      &! as above for the original cell
+              &  i,j                  ! counters on cartesian coordinates
+         !
+         qeq = (q(1)*(epsil(1,1)*q(1)+epsil(1,2)*q(2)+epsil(1,3)*q(3))+    &
+                q(2)*(epsil(2,1)*q(1)+epsil(2,2)*q(2)+epsil(2,3)*q(3))+    &
+                q(3)*(epsil(3,1)*q(1)+epsil(3,2)*q(2)+epsil(3,3)*q(3)))
+         !
+        !print*, q(1), q(2), q(3)
+         if (qeq < 1.d-8) then
+            write(6,'(5x,"A direction for q was not specified:", &
+              &          "TO-LO splitting will be absent")')
+            return
+         end if
+         !
+         do na = 1,nat
+            na_blk = itau_blk(na)
+            do nb = 1,nat
+               nb_blk = itau_blk(nb)
+               !
+               do i=1,3
+                  !
+                  zag(i) = q(1)*zeu(1,i,na_blk) +  q(2)*zeu(2,i,na_blk) + &
+                           q(3)*zeu(3,i,na_blk)
+                  zbg(i) = q(1)*zeu(1,i,nb_blk) +  q(2)*zeu(2,i,nb_blk) + &
+                           q(3)*zeu(3,i,nb_blk)
+               end do
+               !
+               do i = 1,3
+                  do j = 1,3
+                     dyn(i,j,na,nb) = dyn(i,j,na,nb)+ fpi*e2*zag(i)*zbg(j)/qeq/omega
+        !             print*, zag(i),zbg(j),qeq, fpi*e2*zag(i)*zbg(j)/qeq/omega
+                  end do
+               end do
+            end do
+         end do
+         !
+         return
+        end subroutine nonanal
+
+
+        SUBROUTINE trasl( phid, phiq, nq, nr1, nr2, nr3, nat, m1, m2, m3 )
+           !----------------------------------------------------------------------------
+           !
+           USE kinds, ONLY : DP
+           !
+           IMPLICIT NONE
+           INTEGER, intent(in) ::  nr1, nr2, nr3, m1, m2, m3, nat, nq
+           COMPLEX(DP), intent(in) :: phiq(3,3,nat,nat,48)
+           COMPLEX(DP), intent(out) :: phid(nr1,nr2,nr3,3,3,nat,nat)
+           !
+           INTEGER :: j1,j2,  na1, na2
+           !
+           DO j1=1,3
+              DO j2=1,3
+                 DO na1=1,nat
+                    DO na2=1,nat
+                       phid(m1,m2,m3,j1,j2,na1,na2) = &
+                            0.5d0 * (      phiq(j1,j2,na1,na2,nq) +  &
+                                   CONJG(phiq(j2,j1,na2,na1,nq)))
+                    END DO
+                 END DO
+              END DO
+           END DO
+           !
+           RETURN
+         END SUBROUTINE trasl
+ 
 
 end module get_lf
