@@ -59,8 +59,8 @@ module get_lf
 !        print*, 'Got parallelize'
 
         qe_tau = pos * A_TO_BOHR / qe_alat
-        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
-        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
+        qe_bg = inv(rprim)*qe_alat / (A_TO_BOHR)
+        qe_omega = abs(dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3)
 
         !$OMP PARALLEL DO IF(parallelize) DEFAULT(NONE) &
         !$OMP PRIVATE(iqpt, w_neg_freqs, qpt, qe_q, w2_q, pols_q, d2_q, is_q_gamma, self_energy, &
@@ -204,8 +204,8 @@ module get_lf
         endif
 !        print*, 'Got parallelize'
         qe_tau = pos * A_TO_BOHR / qe_alat
-        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
-        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
+        qe_bg = inv(rprim)*qe_alat / (A_TO_BOHR)
+        qe_omega = abs(dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3)
 
         !$OMP PARALLEL DO IF(parallelize) DEFAULT(NONE) &
         !$OMP PRIVATE(iqpt, w_neg_freqs, qpt, qe_q, w2_q, pols_q, is_q_gamma, self_energy, &
@@ -351,8 +351,8 @@ module get_lf
         endif
 !        print*, 'Got parallelize'
         qe_tau = pos * A_TO_BOHR / qe_alat
-        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
-        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
+        qe_bg = inv(rprim)*qe_alat / (A_TO_BOHR)
+        qe_omega = abs(dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3)
 
         !$OMP PARALLEL DO IF(parallelize) DEFAULT(NONE) &
         !$OMP PRIVATE(iqpt, w_neg_freqs, qpt, qe_q, w2_q, pols_q, is_q_gamma, self_energy, &
@@ -494,8 +494,8 @@ module get_lf
         endif
 !        print*, 'Got parallelize'
         qe_tau = pos * A_TO_BOHR / qe_alat
-        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
-        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
+        qe_bg = inv(rprim)*qe_alat / (A_TO_BOHR)
+        qe_omega = abs(dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3)
 
         !$OMP PARALLEL DO IF(parallelize) DEFAULT(NONE) &
         !$OMP PRIVATE(iqpt, w_neg_freqs, qpt, qe_q, w2_q, pols_q, d2_q, is_q_gamma, self_energy, &
@@ -728,8 +728,8 @@ module get_lf
                 parallelize = .False.
         endif
         qe_tau = pos * A_TO_BOHR / qe_alat
-        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
-        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
+        qe_bg = inv(rprim)*qe_alat / (A_TO_BOHR)
+        qe_omega = abs(dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3)
         
         !$OMP PARALLEL DO IF(parallelize) &
         !$OMP DEFAULT(SHARED) &
@@ -846,8 +846,8 @@ module get_lf
                 parallelize = .False.
         endif
         qe_tau = pos * A_TO_BOHR / qe_alat
-        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
-        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
+        qe_bg = inv(rprim)*qe_alat / (A_TO_BOHR)
+        qe_omega = abs(dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3)
 
         !$OMP PARALLEL DO IF(parallelize) &
         !$OMP DEFAULT(SHARED) &
@@ -968,8 +968,8 @@ module get_lf
             enddo
         enddo
         qe_tau = pos * A_TO_BOHR / qe_alat
-        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
-        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
+        qe_bg = inv(rprim)*qe_alat / (A_TO_BOHR)
+        qe_omega = abs(dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3)
 
   !      print*, 'Calculating self-energy!'
         !$OMP PARALLEL DO IF(parallelize) DEFAULT(NONE) &
@@ -1124,8 +1124,8 @@ module get_lf
 !            enddo
 !        enddo
         qe_tau = pos * A_TO_BOHR / qe_alat
-        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
-        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
+        qe_bg = inv(rprim)*qe_alat / ( A_TO_BOHR)
+        qe_omega = abs(dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3)
 
 !        print*, 'Starting with self energy!'
         !$OMP PARALLEL DO IF(parallelize) &
@@ -1245,7 +1245,7 @@ module get_lf
             deallocate(ifc3, d3, d3_pols, selfnrg)
             deallocate(pols_k, pols_mk_mq, intermediate)
             deallocate(pols_k2, pols_mk_mq2)
-            deallocate(kpt, mkpt)
+            deallocate(kpt, mkpt, qe_kpt, qe_mkpt)
             deallocate(w2_k, w2_mk_mq, w_k, w_mk_mq)
             deallocate(freqs_array)
             else
@@ -1305,8 +1305,8 @@ module get_lf
         !print*, 'Initialize self energy!'
         self_energy(:,:,:) = complex(0.0_DP, 0.0_DP)
         qe_tau = pos * A_TO_BOHR / qe_alat
-        qe_bg = inv(rprim)*qe_alat / (2.0_DP * PI * A_TO_BOHR)
-        qe_omega = dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3
+        qe_bg = inv(rprim)*qe_alat / (A_TO_BOHR)
+        qe_omega = abs(dot_product(cross(rprim(1,:), rprim(2,:)) , rprim(3,:))*A_TO_BOHR**3)
         !print*, 'Initialized self energy!'
         !$OMP PARALLEL DO IF(parallelize) &
         !$OMP DEFAULT(NONE) &
@@ -1324,7 +1324,7 @@ module get_lf
             allocate(selfnrg(ne, 3*nat, 3*nat))
             allocate(pols_k(3*nat,3*nat), pols_mk_mq(3*nat,3*nat))
             allocate(pols_k2(3*nat,3*nat), pols_mk_mq2(3*nat,3*nat))
-            allocate(kpt(3), mkpt(3))
+            allocate(kpt(3), mkpt(3), qe_kpt(3), qe_mkpt(3))
             allocate(w2_k(3*nat), w2_mk_mq(3*nat), w_k(3*nat), w_mk_mq(3*nat))
             allocate(freqs_array(3*nat, 3))
             is_k_neg = .False.
@@ -1423,7 +1423,7 @@ module get_lf
             deallocate(ifc3, d3, d3_pols, selfnrg)
             deallocate(pols_k, pols_mk_mq)
             deallocate(pols_k2, pols_mk_mq2)
-            deallocate(kpt, mkpt)
+            deallocate(kpt, mkpt, qe_kpt, qe_mkpt)
             deallocate(w2_k, w2_mk_mq, w_k, w_mk_mq)
             deallocate(freqs_array)
             else
@@ -1780,7 +1780,6 @@ module get_lf
 
 
         pols_q1 = complex(0.0_DP,0.0_DP)
-
         do ir = 1, nfc2
             do iat = 1, nat
             do jat = 1, nat
@@ -1850,7 +1849,7 @@ module get_lf
            enddo
         enddo
 
-        call rgd_blk_diff(0, 0, 0, nat, pols_q2, qe_q, qe_tau, dielectric_tensor, qe_zeu, qe_bg, qe_omega, qe_alat, 0, +1.0)
+        call rgd_blk(0, 0, 0, nat, pols_q2, qe_q, qe_tau, dielectric_tensor, qe_zeu, qe_bg, qe_omega, qe_alat, .FALSE. , +1.0_DP)
 
         if(sqrt(dot_product(qe_q, qe_q)) < 1.0d-8) then
            call random_number(q_vect)
@@ -1859,7 +1858,6 @@ module get_lf
         endif
 
         do iat = 1, nat
-           qe_itau(iat) = iat
            do jat = 1, nat
               do i = 1, 3
                  do j = 1, 3
@@ -1880,9 +1878,15 @@ module get_lf
            ! implemented: the Ewald parameter alpha must be large enough to
            ! have negligible r-space contribution
            !
-           use kinds, only: dp
-           use constants, only: pi,tpi, fpi, e2
+
            implicit none
+
+           INTEGER, PARAMETER :: DP = selected_real_kind(14,200)
+           REAL(DP), PARAMETER :: pi     = 3.14159265358979323846_DP
+           REAL(DP), PARAMETER :: tpi    = 2.0_DP * pi
+           REAL(DP), PARAMETER :: fpi    = 4.0_DP * pi
+           REAL(DP), PARAMETER :: e2 = 2.0_DP      ! the square of the electron charge
+
            integer ::  nr1, nr2, nr3    !  FFT grid
            integer ::  nat              ! number of atoms
            complex(DP) :: dyn(3,3,nat,nat) ! dynamical matrix
