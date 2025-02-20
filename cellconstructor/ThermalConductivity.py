@@ -3679,13 +3679,13 @@ class ThermalConductivity:
             #energies = np.arange(ne, dtype=float)*self.delta_omega + self.delta_omega
             dos = np.sum(np.sum(self.lineshapes[key], axis = 0), axis = 0)
             dos = dos/float(self.nkpt)
-            print('Total DOS is (should be number of bands): ', np.trapz(dos, energies))
+            print('Total DOS is (should be number of bands): ', np.trapz(dos, self.energies))
         else:
             print('Lineshapes not calculated for this temperature! Can not calculate DOS! ')
             dos = 0
             energies = 0
 
-        ne = int(np.amax(energies)/de)
+        ne = int(np.amax(self.energies)/de)
         energies_smoothed = np.arange(ne, dtype=float)*de + de
         dos_smoothed = np.zeros(ne, dtype=float)
         for ien in range(ne):
@@ -4361,7 +4361,7 @@ class ThermalConductivity:
 
     ##############################################################################################################################################
 
-    def calculate_thermal_expansion_quasiharmonic(self, temperatures, bulk):
+    def calculate_thermal_expansion_quasiharmonic(self, temperatures, bulk, use_hessian = False):
 
         """
 
@@ -4369,6 +4369,7 @@ class ThermalConductivity:
 
         temperatures : List of temperatures for which to calculate thermal expansion.
         bulk         : Bulk modulus of the material (GPa).
+        use_hessian  : Use Hessian phonons to get the harmonic free energy
 
         """
 
@@ -4376,12 +4377,40 @@ class ThermalConductivity:
         volume = np.zeros(len(temperatures))
         for itemp in range(len(temperatures)):
             cp_key = format(temperatures[itemp], '.1f')
-            if(cp_key in self.cp.keys()):
-                print('Phonon mode heat capacities for this temperature have already been calculated. Continuing ...')
+            if(not use_hessian):
+                if(cp_key in self.cp.keys()):
+                    print('Phonon mode heat capacities for this temperature have already been calculated. Continuing ...')
+                else:
+                    self.get_heat_capacity(temperatures[itemp])
+                te[itemp] = np.einsum('ij,ij', self.cp[cp_key], self.gruneisen)/float(self.nkpt)/self.volume/bulk*1.0e21
+                volume[itemp] = self.volume*(1.0 + np.sum(te[:itemp])*(temperatures[1] - temperatures[0]))
             else:
-                self.get_heat_capacity(temperatures[itemp])
-            te[itemp] = np.einsum('ij,ij', self.cp[cp_key], self.gruneisen)/float(self.nkpt)/self.volume/bulk*1.0e21
-            volume[itemp] = self.volume*(1.0 + np.sum(te[:itemp])*(temperatures[1] - temperatures[0]))
+                from cellconstructor.Spectral import get_static_correction
+
+                dyn_list = get_static_correction(self.dyn, self.fc3, self.dyn.GetSupercell(), self.irr_k_points, temperatures[itemp])
+                m = np.tile(self.dyn.structure.get_masses_array(), (3,1)).T.ravel()
+                mm_mat = np.sqrt(np.outer(m, m))
+                w_q = []
+                cp = []
+                for iq in range(len(dyn_list)):
+                    w2_q, pols_q = np.linalg.eigh(dyn_list[iq]/mm_mat)
+                    if(np.linalg.norm(self.irr_k_points[iq]) < 1.0e-6):
+                        for iband in range(self.nband):
+                            if(w2_q[iband] < np.amax(w2_q)*1.0e-6):
+                                w2_q[iband] = 0.0
+                    w_q.append(np.sqrt(w2_q))
+                    curr_cp = np.zeros_like(w2_q)
+                    for iband in range(self.nband):
+                        curr_cp[iband] = heat_capacity(w_q[-1][iband]*SSCHA_TO_THZ*1.0e12, temperatures[itemp], HPLANCK, KB, cp_mode = self.cp_mode)
+                    cp.append(curr_cp)
+                with open('Frequencies_at_' + cp_key, 'w+') as outfile:
+                    for iq in range(len(dyn_list)):
+                        for iband in range(self.nband):
+                            outfile.write(format(w_q[iq][iband]*SSCHA_TO_THZ, '.12f') + 3*' ')
+                            outfile.write(format(self.freqs[self.qstar[iq][0]][iband]*SSCHA_TO_THZ, '.12f') + 3*' ')
+                            outfile.write(format(cp[iq][iband], '.12e') + '\n')
+                te[itemp] = np.einsum('ij,ij,i', cp, self.gruneisen[self.qstar[:][0]], self.weights)/float(self.nkpt)/self.volume/bulk*1.0e21
+                volume[itemp] = self.volume*(1.0 + np.sum(te[:itemp])*(temperatures[1] - temperatures[0]))
 
         with open('Thermal_expansion', 'w+') as outfile:
             outfile.write('#   ' + format('Temperature (K)', STR_FMT))

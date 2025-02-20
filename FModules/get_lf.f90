@@ -1813,6 +1813,18 @@ module get_lf
         call zheev('V', 'L', 3*nat, pols_q, 3*nat, w2_q, WORK, LWORK, RWORK, INFO)
         LWORK = MIN( size(WORK), INT( WORK( 1 ) ) )
         call zheev('V', 'L', 3*nat, pols_q, 3*nat, w2_q, WORK, LWORK, RWORK, INFO)
+        
+        !if(any(w2_q < 0.0_DP)) then
+        !        print*, 'Negative in interolate'
+        !        print*, q, qe_q
+        !        print*, dielectric_tensor
+        !        print*, qe_zeu
+        !        print*, qe_bg
+        !        print*, vec_dot_mat(qe_q, inv(qe_bg))
+        !        print*, qe_omega, qe_alat
+        !        STOP
+        !endif
+
     end subroutine
 
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
