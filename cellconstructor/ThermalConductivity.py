@@ -1947,7 +1947,7 @@ class ThermalConductivity:
             if(self.fc2.effective_charges is None):
                 qe_zeu =np.zeros((3,3,self.dyn.structure.N_atoms))
                 dielectric_tensor = np.zeros((3,3))
-                qe_alat = self.fc2.QE_alat
+                qe_alat = 0.0
                 long_range = False
             else:
                 qe_alat = self.fc2.QE_alat
@@ -2116,7 +2116,7 @@ class ThermalConductivity:
         if(self.fc2.effective_charges is None):
             qe_zeu =np.zeros((3,3,self.dyn.structure.N_atoms))
             dielectric_tensor = np.zeros((3,3))
-            qe_alat = self.fc2.QE_alat
+            qe_alat = 0.0
             long_range = False
         else:
             qe_alat = self.fc2.QE_alat
@@ -2253,7 +2253,7 @@ class ThermalConductivity:
         if(self.fc2.effective_charges is None):
             qe_zeu =np.zeros((3,3,self.dyn.structure.N_atoms))
             dielectric_tensor = np.zeros((3,3))
-            qe_alat = self.fc2.QE_alat
+            qe_alat = 0.0
             long_range = False
         else:
             qe_alat = self.fc2.QE_alat
@@ -2827,7 +2827,7 @@ class ThermalConductivity:
         if(self.fc2.effective_charges is None):
             qe_zeu =np.zeros((3,3,self.dyn.structure.N_atoms))
             dielectric_tensor = np.zeros((3,3))
-            qe_alat = self.fc2.QE_alat
+            qe_alat = 0.0
             long_range = False
         else:
             qe_alat = self.fc2.QE_alat

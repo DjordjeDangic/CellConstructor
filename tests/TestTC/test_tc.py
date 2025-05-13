@@ -40,7 +40,7 @@ def test_tc():
     start_time = time.time()
     tc.setup_harmonic_properties(smear)
     tc.write_harmonic_properties_to_file()
-
+    print(tc.fc2.QE_alat)
     tc.calculate_kappa(mode = 'SRTA', temperatures = temperatures,
     write_lifetimes = True, gauss_smearing = True, offdiag_mode = 'wigner',
     kappa_filename = 'Thermal_conductivity_SRTA', lf_method = 'fortran-P')
