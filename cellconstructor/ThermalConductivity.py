@@ -1768,7 +1768,8 @@ class ThermalConductivity:
         omega_exponents = self.freqs*SSCHA_TO_THZ*1.0e12*HPLANCK/KB/temperature
         ac_kappa_diag = np.zeros((ne, 3, 3))
         ac_kappa_offdiag = np.zeros((ne, 3, 3))
-        front_factor = (np.exp(exponents) - 1.0)/exponents
+        front_factor = np.divide(np.exp(exponents) - 1.0, exponents, out=np.ones_like(exponents, dtype=float), where=exponents!=0.0)
+        #front_factor = (np.exp(exponents) - 1.0)/exponents
         for istar in self.qstar:
             for iqpt in istar:
                 for iband in range(self.nband):
