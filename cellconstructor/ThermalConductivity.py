@@ -1860,7 +1860,7 @@ class ThermalConductivity:
         omega_exponents = self.freqs*SSCHA_TO_THZ*1.0e12*HPLANCK/KB/temperature
         ac_kappa_diag = np.zeros((ne, 3, 3))
         ac_kappa_offdiag = np.zeros((ne, 3, 3))
-        front_factor = np.divide(np.exp(exponents) - 1.0, exponents, out=np.ones_like(exponents, dtype=float), where=exponents!=0.0)
+        #front_factor = np.divide(np.exp(exponents) - 1.0, exponents, out=np.ones_like(exponents, dtype=float), where=exponents!=0.0)
         for istar in self.qstar:
             for iqpt in istar:
                 for iband in range(self.nband):
@@ -1873,6 +1873,14 @@ class ThermalConductivity:
                                 freq_sum = self.freqs[iqpt, iband] + self.freqs[iqpt, jband]
                                 exp_omega3 = np.exp(omega_exponents[iqpt,jband])
                                 exp_omega4 = np.exp(-1.0*omega_exponents[iqpt,jband])
+                                if(freq_diff == 0.0):
+                                    front_factor1 = np.ones_like(exponents, dtype=float)
+                                    front_factor4 = np.ones_like(exponents, dtype=float)
+                                else:
+                                    front_factor1 = np.array([(np.exp(freq_diff*SSCHA_TO_THZ*1.0e12*HPLANCK/KB/temperature) - 1.0)/(freq_diff*SSCHA_TO_THZ*1.0e12*HPLANCK/KB/temperature) for x in range(ne)])
+                                    front_factor4 = -np.array([(np.exp(-freq_diff*SSCHA_TO_THZ*1.0e12*HPLANCK/KB/temperature) - 1.0)/(freq_diff*SSCHA_TO_THZ*1.0e12*HPLANCK/KB/temperature) for x in range(ne)])
+                                front_factor3 = np.array([(np.exp(freq_sum*SSCHA_TO_THZ*1.0e12*HPLANCK/KB/temperature) - 1.0)/(freq_sum*SSCHA_TO_THZ*1.0e12*HPLANCK/KB/temperature) for x in range(ne)])
+                                front_factor2 = -np.array([(np.exp(-freq_sum*SSCHA_TO_THZ*1.0e12*HPLANCK/KB/temperature) - 1.0)/(freq_sum*SSCHA_TO_THZ*1.0e12*HPLANCK/KB/temperature) for x in range(ne)])
                                 c_matrix1 = exp_omega1*exp_omega3*freq_diff**2/self.freqs[iqpt,jband]/self.freqs[iqpt,iband]/(exp_omega1 - 1.0)/(exp_omega3 - 1.0)
                                 c_matrix2 = exp_omega1*freq_sum**2/self.freqs[iqpt,jband]/self.freqs[iqpt,iband]/(exp_omega1 - 1.0)/(exp_omega3 - 1.0)
                                 c_matrix3 = exp_omega3*freq_sum**2/self.freqs[iqpt,jband]/self.freqs[iqpt,iband]/(exp_omega1 - 1.0)/(exp_omega3 - 1.0)
@@ -1894,15 +1902,15 @@ class ThermalConductivity:
                                 gamma_matrix3 = gamma_sum/(gamma_sum**2 + (freq_sum - energies)**2) 
                                 gamma_matrix4 = gamma_sum/(gamma_sum**2 + (freq_diff + energies)**2) 
                                 if(iband != jband):
-                                    ac_kappa_offdiag += (np.einsum('ij,k->kij', gvel_sum,front_factor*c_matrix1*gamma_matrix2) + \
-                                            np.einsum('ij,k->kij', gvel_sum,front_factor*c_matrix4*gamma_matrix3) + \
-                                            np.einsum('ij,k->kij', gvel_sum,front_factor*c_matrix3*gamma_matrix1) + \
-                                            np.einsum('ij,k->kij', gvel_sum,front_factor*c_matrix2*gamma_matrix4))*self.freqs[iqpt, iband]*self.freqs[iqpt, jband]/4.0
+                                    ac_kappa_offdiag += (np.einsum('ij,k->kij', gvel_sum,front_factor2*c_matrix1*gamma_matrix2) + \
+                                            np.einsum('ij,k->kij', gvel_sum,front_factor3*c_matrix4*gamma_matrix3) + \
+                                            np.einsum('ij,k->kij', gvel_sum,front_factor1*c_matrix3*gamma_matrix1) + \
+                                            np.einsum('ij,k->kij', gvel_sum,front_factor4*c_matrix2*gamma_matrix4))*self.freqs[iqpt, iband]*self.freqs[iqpt, jband]/4.0
                                 else:
-                                    ac_kappa_diag += (np.einsum('ij,k->kij', gvel_sum,front_factor*c_matrix1*gamma_matrix2) + \
-                                            np.einsum('ij,k->kij', gvel_sum,front_factor*c_matrix4*gamma_matrix3) + \
-                                            np.einsum('ij,k->kij', gvel_sum,front_factor*c_matrix3*gamma_matrix1) + \
-                                            np.einsum('ij,k->kij', gvel_sum,front_factor*c_matrix2*gamma_matrix4))*self.freqs[iqpt, iband]*self.freqs[iqpt, jband]/4.0
+                                    ac_kappa_diag += (np.einsum('ij,k->kij', gvel_sum,front_factor2*c_matrix1*gamma_matrix2) + \
+                                            np.einsum('ij,k->kij', gvel_sum,front_factor3*c_matrix4*gamma_matrix3) + \
+                                            np.einsum('ij,k->kij', gvel_sum,front_factor1*c_matrix3*gamma_matrix1) + \
+                                            np.einsum('ij,k->kij', gvel_sum,front_factor4*c_matrix2*gamma_matrix4))*self.freqs[iqpt, iband]*self.freqs[iqpt, jband]/8.0
 
         ac_kappa_diag *= SSCHA_TO_MS**2/self.volume/float(self.nkpt)*1.e30*SSCHA_TO_THZ*1.0e12*HPLANCK**2/KB/temperature**2/np.pi/2.0
         ac_kappa_offdiag *= SSCHA_TO_MS**2/self.volume/float(self.nkpt)*1.e30*SSCHA_TO_THZ*1.0e12*HPLANCK**2/KB/temperature**2/np.pi/2.0
