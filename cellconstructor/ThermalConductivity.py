@@ -3807,8 +3807,8 @@ class ThermalConductivity:
                 ikpt0 = self.qstar[ikpt][0]
                 for iband in range(self.nband):
                     for iat in range(self.dyn.structure.N_atoms):
-                        atom_weight = np.linalg.norm(self.eigvecs[ikpt0,3*iat:3*iat + 3, :])*w_k[self.dyn.structure.atoms[iat]]
-                        dos += self.lineshapes[key][ikpt0,iband]*self.weights[ikpt]/2.0
+                        atom_weight = np.linalg.norm(self.eigvecs[ikpt0,3*iat:3*iat + 3, iband])**2*w_k[self.dyn.structure.atoms[iat]]
+                        dos += self.lineshapes[key][ikpt0,iband]*self.weights[ikpt]/2.0*atom_weight
             dos = dos/float(self.nkpt)
             print('Total DOS is (should be number of bands): ', np.trapz(dos, self.energies))
         else:
