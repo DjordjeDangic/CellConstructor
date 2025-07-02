@@ -3771,7 +3771,7 @@ class ThermalConductivity:
 
     ########################################################################################################################################
 
-    def get_dos_from_lineshapes(self, temperature, de = 0.1):
+    def get_dos_from_lineshapes(self, temperature, de = 0.1, smearing = None, w_k = None):
 
         """
         Calculates phonon DOS from lineshapes at temperature.
@@ -3782,11 +3782,33 @@ class ThermalConductivity:
         """
 
         de = de/SSCHA_TO_THZ
+        if(smearing is None):
+            smearing = de/2.0
+        if(w_k is None):
+            w_k = {}
+            elements = np.unique(self.dyn.structure.atoms)
+            for element in elements:
+                w_k[element] = 1.0/float(len(elements))
+        else:
+            elements = np.unique(self.dyn.structure.atoms)
+            for key in w_k.keys():
+                if(key not in elements):
+                    print('Elements in system: ', elements)
+                    print('Provided neutron scattering cross sections: ', list(w_k.keys()))
+                    raise RuntimeError('Neutron scattering cross section for elements provided but do not match elements in the system. Exiting ...')
+
         key = format(temperature, '.1f')
+        dos = np.zeros_like(self.energies)
         if(key in self.lineshapes.keys()):
             ne = self.lineshapes[key].shape[-1]
             #energies = np.arange(ne, dtype=float)*self.delta_omega + self.delta_omega
-            dos = np.sum(np.sum(self.lineshapes[key], axis = 0), axis = 0)
+            #dos = np.sum(np.sum(self.lineshapes[key], axis = 0), axis = 0)
+            for ikpt in range(self.nirrkpt):
+                ikpt0 = self.qstar[ikpt][0]
+                for iband in range(self.nband):
+                    for iat in range(self.dyn.structure.N_atoms):
+                        atom_weight = np.linalg.norm(self.eigvecs[ikpt0,3*iat:3*iat + 3, :])*w_k[self.dyn.structure.atoms[iat]]
+                        dos += self.lineshapes[key][ikpt0,iband]*self.weights[ikpt]/2.0
             dos = dos/float(self.nkpt)
             print('Total DOS is (should be number of bands): ', np.trapz(dos, self.energies))
         else:
@@ -3799,7 +3821,7 @@ class ThermalConductivity:
         dos_smoothed = np.zeros(ne, dtype=float)
         for ien in range(ne):
             for jen in range(len(dos)):
-                dos_smoothed[ien] += gaussian(energies_smoothed[ien], self.energies[jen], de/2.0)*dos[jen]
+                dos_smoothed[ien] += gaussian(energies_smoothed[ien], self.energies[jen], smearing)*dos[jen]
         int_dos = np.trapz(dos_smoothed, energies_smoothed)
         dos_smoothed = dos_smoothed/int_dos*np.trapz(dos, self.energies)
 
