@@ -673,6 +673,7 @@ class ThermalConductivity:
         # Lifetimes, frequency shifts, lineshapes, heat_capacities and thermal conductivities are stored in dictionaries
         # Dictionary key is the temperature at which property is calculated on
         self.lifetimes = {}
+        self.mfps = {}
         self.freqs_shifts = {}
         self.lineshapes = {}
         self.cp = {}
@@ -2528,6 +2529,127 @@ class ThermalConductivity:
                 else:
                     outfile.write(3*' ' + format(np.sum(curr_ls[:, ien])/SSCHA_TO_THZ, '.12e'))
                 outfile.write('\n')
+
+    ##################################################################################################################################
+
+    def get_cumulative_kappa(self, temperature, npoints = 50, coherent = True):
+
+        temp_key = format(temperature, '.1f')
+        cp_key = temp_key
+        lf_key = temp_key
+        if(temp_key in self.mfps.keys()):
+            print('Mean free paths for this temperature have already been calculated. Continuing ...')
+        else:
+            print('Mean free paths for this temperature have not been calculated. Calculating mfps first ... ')
+            self.get_mean_free_paths(self, temperature)
+
+        scatt_rates = np.divide(np.ones_like(self.lifetimes[temp_key], dtype=float), self.lifetimes[temp_key], out=np.zeros_like(self.lifetimes[temp_key]), where=self.lifetimes[temp_key]!=0.0)/(SSCHA_TO_THZ*1.0e12*2.0*np.pi)
+
+        max_mfp = np.amax(self.mfps[temp_key])
+        mfps = np.linspace(0.0, max_mfp, npoints, dtype=float)
+        cumm_kappa = np.zeros((3,3,npoints), dtype=float)
+
+        for istar in self.qstar:
+            for iqpt in istar:
+                for iband in range(self.nband):
+                    if(self.freqs[iqpt, iband] != 0.0 and scatt_rates[iqpt, iband] != 0.0):
+                        if(self.off_diag):
+                            for jband in range(self.nband):
+                                if(self.group_velocity_mode == 'wigner'):
+                                    vel_fact = 2.0*np.sqrt(self.freqs[iqpt, jband]*self.freqs[iqpt, iband])/(self.freqs[iqpt, jband] + self.freqs[iqpt, iband]) # as per Eq.34 in Caldarelli et al
+                                else:
+                                    vel_fact = 1.0
+                                if(self.freqs[iqpt, jband] != 0.0 and scatt_rates[iqpt, jband] != 0.0 and iband != jband and coherent):
+                                    gvel = np.zeros_like(self.gvels[iqpt, iband, jband])
+                                    gvel_sum = np.zeros((3,3), dtype=complex)
+                                    for r in self.rotations:
+                                        rot_q = np.dot(self.reciprocal_lattice.T, np.dot(r.T, np.linalg.inv(self.reciprocal_lattice.T)))
+                                        gvel = np.dot(rot_q, self.gvels[iqpt, iband, jband])
+                                        gvel_sum += np.outer(gvel.conj(), gvel)
+                                    gvel_sum = gvel_sum.real*vel_fact**2
+                                    a1 = self.freqs[iqpt, jband]*self.cp[cp_key][iqpt, iband]/self.freqs[iqpt, iband] + self.freqs[iqpt, iband]*self.cp[cp_key][iqpt, jband]/self.freqs[iqpt, jband]
+                                    a11 = self.freqs[iqpt, jband]*self.cp[cp_key][iqpt, iband]/self.freqs[iqpt, iband] - self.freqs[iqpt, iband]*self.cp[cp_key][iqpt, jband]/self.freqs[iqpt, jband]
+                                    a3 = 0.5*(scatt_rates[iqpt, iband] + scatt_rates[iqpt, jband])
+                                    a4 = ((self.freqs[iqpt,iband] - self.freqs[iqpt,jband]))**2 + (scatt_rates[iqpt, iband] + scatt_rates[iqpt, jband])**2/4.0
+                                    a41 = ((self.freqs[iqpt,iband] + self.freqs[iqpt,jband]))**2 + (scatt_rates[iqpt, iband] + scatt_rates[iqpt, jband])**2/4.0
+                                    for imfp in range(1, npoints):
+                                        if(mfps[imfp] >= self.mfps[temp_key][iqpt][iband]):
+                                            cumm_kappa[:,:,imfp] += a1*a3/a4*gvel_sum/2.0/np.pi/float(len(self.rotations))/2.0#*float(len(istar))
+                                            cumm_kappa[:,:,imfp] += a1*a3/a41*gvel_sum/2.0/np.pi/float(len(self.rotations))/2.0#*float(len(istar))
+                                elif(self.freqs[iqpt, jband] != 0.0 and iband == jband):
+                                    gvel_sum = np.zeros((3,3), dtype=complex)
+                                    gvel = np.zeros_like(self.gvels[iqpt, iband, jband])
+                                    for r in self.rotations:
+                                        rot_q = np.dot(self.reciprocal_lattice.T, np.dot(r.T, np.linalg.inv(self.reciprocal_lattice.T)))
+                                        gvel = np.dot(rot_q, self.gvels[iqpt, iband, jband])
+                                        gvel_sum += np.outer(gvel.conj(), gvel)
+                                    gvel_sum = gvel_sum.real*vel_fact**2
+                                    a1 = self.freqs[iqpt, jband]*self.cp[cp_key][iqpt, iband]/self.freqs[iqpt, iband] + self.freqs[iqpt, iband]*self.cp[cp_key][iqpt, jband]/self.freqs[iqpt, jband]
+                                    a3 = 0.5*(scatt_rates[iqpt, iband] + scatt_rates[iqpt, jband])
+                                    a4 = (self.freqs[iqpt,iband] - self.freqs[iqpt,jband])**2 + (scatt_rates[iqpt, iband] + scatt_rates[iqpt, jband])**2/4.0
+                                    for imfp in range(1, npoints):
+                                        if(mfps[imfp] >= self.mfps[temp_key][iqpt][iband]):
+                                            cumm_kappa[:,:,imfp] += a1*a3/a4*gvel_sum/2.0/np.pi/float(len(self.rotations))/2.0#*float(len(istar))
+                        else:
+                            gvel = np.zeros_like(self.gvels[iqpt, iband])
+                            gvel_sum = np.zeros((3,3), dtype=complex)
+                            for r in self.rotations:
+                                rot_q = np.dot(self.reciprocal_lattice.T, np.dot(r.T, np.linalg.inv(self.reciprocal_lattice.T)))
+                                gvel = np.dot(rot_q, self.gvels[iqpt, iband])
+                                gvel_sum += np.outer(gvel.conj(), gvel)
+                            gvel_sum = gvel_sum.real/float(len(self.rotations))
+                            for imfp in range(1, npoints):
+                                if(mfps[imfp] >= self.mfps[temp_key][iqpt][iband]):
+                                    cumm_kappa[:,:,imfp] += self.cp[cp_key][iqpt][iband]*gvel_sum*self.lifetimes[lf_key][iqpt][iband]
+
+        if(self.off_diag):
+            cumm_kappa = cumm_kappa/SSCHA_TO_THZ/1.0e12
+            cumm_kappa = cumm_kappa*SSCHA_TO_MS**2
+        else:
+            cumm_kappa = cumm_kappa*SSCHA_TO_MS**2
+        cumm_kappa = cumm_kappa/self.volume/float(self.nkpt)*1.0e30
+
+        return cumm_kappa, mfps
+
+    ##################################################################################################################################
+
+    def get_mean_free_paths(self, temperature, ne = 1, gauss_smearing = False, isotope_scattering = False, isotopes = None, lf_method = 'fortran-LA', write_mfps = False, filename = 'Mean_free_paths_'):
+
+        """
+        Calculate phonon mode mean free path at temperature.
+
+        temperature :: Temperature at which we want to calculate mean free path
+
+        """
+
+        temp_key = format(temperature, '.1f')
+        if(temp_key in self.lifetimes.keys()):
+            print('Lifetimes for this temperature have already been calculated. Continuing ...')
+        else:
+            print('Lifetimes for this temperature have not been calculated. Calculating lifetimes first ... ')
+            self.get_lifetimes(temperature, ne, gauss_smearing = gauss_smearing, isotope_scattering = isotope_scattering, isotopes = isotopes, method = lf_method)
+
+        if not hasattr(self, 'mfps'):
+            self.mfps = {}
+        self.mfps[temp_key] = np.zeros((self.nkpt, self.nband))
+        for istar in self.qstar:
+            for iqpt in istar:
+                for iband in range(self.nband):
+                    if(self.off_diag):
+                        velocity_norm = np.linalg.norm(self.gvels[iqpt, iband, iband])
+                    else:
+                        velocity_norm = np.linalg.norm(self.gvels[iqpt, iband])
+                    self.mfps[temp_key][iqpt,iband] = velocity_norm*self.lifetimes[temp_key][iqpt,iband]*SSCHA_TO_MS*1.0e10
+        if(write_mfps):
+            with open(filename + temp_key, 'w+') as outfile:
+                outfile.write('#  ' + format('Frequency (THz)', STR_FMT))
+                outfile.write('   ' + format('Mean free path (A)', STR_FMT))
+                outfile.write('\n')
+                for iqpt in range(self.nkpt):
+                    for iband in range(self.nband):
+                        outfile.write(3*' ' + format(self.freqs[iqpt, iband]*SSCHA_TO_THZ, '.12e'))
+                        outfile.write(3*' ' + format(self.mfps[temp_key][iqpt, iband], '.12e'))
+                        outfile.write('\n')
 
     ##################################################################################################################################
 
