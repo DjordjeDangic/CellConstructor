@@ -1728,7 +1728,7 @@ class ThermalConductivity:
                     ac_kappa1[iom,i,j] = np.sum(kappaq[:,:,i,j]*c_matrix1[iom]*(1.0/(1.0 + nu_lifetimes1)), axis = (0,1))
                     ac_kappa2[iom,i,j] = np.sum(kappaq[:,:,i,j]*(c_matrix1[iom] + c_matrix2[iom])*(1.0/(1.0 + nu_lifetimes2)), axis = (0,1))
                     ac_kappa4[iom,i,j] = np.sum(kappaq[:,:,i,j]*c_matrix2[iom]*(1.0/(1.0 + nu_lifetimes1)), axis = (0,1))
-            ac_kappa[iom] = ac_kappa1[iom] - ac_kappa2[iom] + ac_kappa4[iom]
+            ac_kappa[iom] = ac_kappa1[iom] + ac_kappa2[iom] + ac_kappa4[iom]
 
         return ac_kappa, ac_kappa1, ac_kappa2, ac_kappa4
 
@@ -1933,18 +1933,28 @@ class ThermalConductivity:
         if(not self.set_up_scattering_grids):
             self.set_scattering_grids_simple()
 
+        if(self.fc2.effective_charges is None):
+            qe_zeu =np.zeros((3,3,self.dyn.structure.N_atoms))
+            dielectric_tensor = np.zeros((3,3))
+            qe_alat = 0.0
+            long_range = False
+        else:
+            qe_alat = self.fc2.QE_alat
+            long_range = True
+            dielectric_tensor = self.fc2.dielectric_tensor
+            qe_zeu = self.fc2.QE_zeu
         is_q_gamma = CC.Methods.is_gamma(self.fc2.unitcell_structure.unit_cell, self.k_points[iqpt])
 
         if(mode_mixing == 'mode_mixing'):
             self_energy = thermal_conductivity.get_lf.calculate_self_energy_full(self.freqs[iqpt], self.k_points[iqpt], self.eigvecs[iqpt], is_q_gamma, \
-                    self.scattering_grids[iqpt].T, self.scattering_weights[iqpt], self.fc2.tensor, self.fc3.tensor, self.fc2.r_vector2, self.fc3.r_vector2, \
-                    self.fc3.r_vector3, self.dyn.structure.coords.T, self.reciprocal_lattice, self.dyn.structure.get_masses_array(), self.sigmas[iqpt], \
-                    temperature, energies, True, gauss_smearing, False, len(self.scattering_grids[iqpt]), self.dyn.structure.N_atoms, len(self.fc2.tensor), len(self.fc3.tensor), len(energies))
+                    self.scattering_grids[iqpt].T, self.scattering_weights[iqpt], qe_zeu, self.fc2.tensor, self.fc3.tensor, self.fc2.r_vector2, self.fc3.r_vector2, \
+                    self.fc3.r_vector3, self.dyn.structure.coords.T, self.reciprocal_lattice, dielectric_tensor, self.dyn.structure.get_masses_array(), self.sigmas[iqpt], \
+                    temperature, qe_alat, energies, True, gauss_smearing, False, long_range, len(self.scattering_grids[iqpt]), self.dyn.structure.N_atoms, len(self.fc2.tensor), len(self.fc3.tensor), len(energies))
         elif(mode_mixing == 'no'):
             self_energy = thermal_conductivity.get_lf.calculate_self_energy_p(self.freqs[iqpt], self.k_points[iqpt], self.eigvecs[iqpt], is_q_gamma, \
-                    self.scattering_grids[iqpt].T, self.scattering_weights[iqpt], self.fc2.tensor, self.fc3.tensor, self.fc2.r_vector2, self.fc3.r_vector2, \
-                    self.fc3.r_vector3, self.dyn.structure.coords.T, self.reciprocal_lattice, self.dyn.structure.get_masses_array(), self.sigmas[iqpt], \
-                    temperature, energies, True, gauss_smearing, False, len(self.scattering_grids[iqpt]), self.dyn.structure.N_atoms, len(self.fc2.tensor), len(self.fc3.tensor), len(energies))
+                    np.array(self.scattering_grids[iqpt]).T, self.scattering_weights[iqpt], qe_zeu, self.fc2.tensor, self.fc3.tensor, self.fc2.r_vector2, self.fc3.r_vector2, \
+                    self.fc3.r_vector3, self.dyn.structure.coords.T, self.reciprocal_lattice, dielectric_tensor, self.dyn.structure.get_masses_array(), self.sigmas[iqpt], \
+                    temperature, qe_alat, energies, True, gauss_smearing, False, long_range, len(self.scattering_grids[iqpt]), self.dyn.structure.N_atoms, len(self.fc2.tensor), len(self.fc3.tensor), len(energies))
         else:
             raise RuntimeError('The chosen option for mode_mixing(' + mode_mixing +  ') does not exist!')
         if(gauss_smearing):
