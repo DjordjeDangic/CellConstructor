@@ -2542,7 +2542,7 @@ class ThermalConductivity:
 
     ##################################################################################################################################
 
-    def get_cumulative_kappa(self, temperature, npoints = 50, coherent = True):
+    def get_cumulative_kappa(self, temperature, npoints = 50, coherent = True, geometric = False):
 
         temp_key = format(temperature, '.1f')
         cp_key = temp_key
@@ -2556,7 +2556,10 @@ class ThermalConductivity:
         scatt_rates = np.divide(np.ones_like(self.lifetimes[temp_key], dtype=float), self.lifetimes[temp_key], out=np.zeros_like(self.lifetimes[temp_key]), where=self.lifetimes[temp_key]!=0.0)/(SSCHA_TO_THZ*1.0e12*2.0*np.pi)
 
         max_mfp = np.amax(self.mfps[temp_key])
-        mfps = np.linspace(0.0, max_mfp, npoints, dtype=float)
+        if(geometric):
+            mfps = np.geomspace(max_mfp*1.0e-6, max_mfp, npoints, dtype=float) - max_mfp*1.0e-6
+        else:
+            mfps = np.linspace(0.0, max_mfp, npoints, dtype=float)
         cumm_kappa = np.zeros((3,3,npoints), dtype=float)
 
         for istar in self.qstar:
